@@ -1,0 +1,245 @@
+#!/usr/bin/env python3
+"""check_hp_updates
+
+Script checks if HP switch device firmware is up to date.
+Installed firmware version is retrieved via SNMPv3 using pysnmp library.
+Latest available firmware version is retrieved via HP JavaScript datafile (See HPE_DATAFILE)
+"""
+
+import argparse
+import re
+
+import demjson
+import requests
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+from urllib3.exceptions import InsecureRequestWarning
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_vars_to_dataset,
+    check_snmp_args,
+    get_snmp_data,
+    report,
+    unknown_exit,
+)
+
+requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
+
+SERVICE = "HP UPDATE"
+SUPPORTED_SWITCH_FAMILY = ["1810", "1820", "1910-24G", "1920-16G", "1920-24G", "1920S"]
+
+
+DOWNLOAD_WEBPAGE = "https://h10145.www1.hpe.com/downloads/SoftwareReleases.aspx"
+DOWNLOAD_PAGE_ELEMENT = "ctl00_ContentPlaceHolderProCurve_ReleasesGridUC1_gvReleasesGrid_ctl02_lblReleaseVersion"
+HPE_DATAFILE = "https://techlibrary.hpe.com/OfficeConnect/scripts/datafile.js"
+JS_FIXES = [
+    (
+        'DocLinkBaseURL_1 + "',
+        '"http://h20564.www2.hpe.com/portal/site/hpsc/public/kb/docDisplay/?docId=',
+    ),
+    (
+        'DocLinkBaseURL_2 + "',
+        '"http://h20564.www2.hpe.com/hpsc/doc/public/display?docId=',
+    ),
+    (
+        'SoftwareBaseURL + "',
+        '"https://h10145.www1.hpe.com/downloads/DownloadSoftware.aspx?SoftwareReleaseUId=',
+    ),
+]
+
+
+def fetch_latest_versions():
+    """Obtain latest available firmware versions from the HP datafile"""
+    try:
+        jsfile = requests.get(HPE_DATAFILE)
+    except (requests.exceptions.RequestException, ValueError) as err:
+        unknown_exit(SERVICE, err)
+    js_selected = re.findall(
+        r"var SeriesList.*?=\r\n(.*?);", jsfile.text, re.DOTALL | re.MULTILINE
+    )[0]
+    for source, target in JS_FIXES:
+        js_selected = js_selected.replace(source, target)
+
+    try:
+        json_datafile = demjson.decode(js_selected)
+    except demjson.JSONDecodeError as err:
+        unknown_exit(SERVICE, f"Unable to get list of updates {err}")
+
+    return json_datafile
+
+
+def get_device_item(list_of_devices, dataset):
+    """Get specific device from list of Unifi devices"""
+    device_item = next(
+        (
+            device
+            for device in list_of_devices
+            if device["ShortCode"] == dataset["type"]
+        ),
+        None,
+    )
+    if device_item is None:
+        unknown_exit(
+            SERVICE,
+            f"Unable to find updates for device {dataset['type']} {dataset['model_number']}",
+        )
+    return device_item
+
+
+def generate_output(dataset):
+    """Prepare message string and exit code"""
+    if dataset["installed_version"] == dataset["latest_version"]:
+        state = "OK"
+        message = (
+            f"{SERVICE} {state} - Firmware {dataset['installed_version']} is current"
+        )
+    else:
+        state = "WARNING"
+        message = (
+            f"{SERVICE} {state} - firmware version {dataset['installed_version']} "
+            f"differs from the latest available {dataset['latest_version']}"
+        )
+        if "release_date" in dataset:
+            message += f" from {dataset['release_date']}"
+
+    return state, message
+
+
+def find_version_from_jsdatafile(dataset):
+    """Get latest firmware version from Javascript datafile"""
+    list_of_devices = fetch_latest_versions()
+    device = get_device_item(list_of_devices, dataset)
+    updates = device["software"]["set_1"]["softwareSet"]
+
+    for update in updates:
+        if "Latest build" in update["name"]:
+            dataset["latest_version"] = re.search(
+                "(.*) - Latest build", update["name"]
+            ).group(1)
+            dataset["release_date"] = update["date"]
+
+    if "latest_version" not in dataset:
+        unknown_exit(
+            SERVICE,
+            f"Unable to find updates for device {dataset['type']} {dataset['model_number']}",
+        )
+
+
+def find_version_from_web(dataset):
+    """Get latest firmware version from the download web page"""
+    webpage_url = f"{DOWNLOAD_WEBPAGE}?ProductNumber={dataset['model_number']}"
+    try:
+        webpage = requests.get(webpage_url, verify=False)
+    except (requests.exceptions.RequestException, ValueError) as err:
+        unknown_exit(SERVICE, err)
+    version_match = re.search(f"{DOWNLOAD_PAGE_ELEMENT}.*?>(.*)</span", webpage.text)
+    if version_match:
+        dataset["latest_version"] = version_match.group(1)
+    else:
+        unknown_exit(
+            SERVICE,
+            f"Unable to find updates for device {dataset['type']} {dataset['model_number']}",
+        )
+
+
+def get_system_information(config, dataset):
+    """Get system description via SNMP and parse it"""
+    system_decription = ObjectType(ObjectIdentity("SNMPv2-MIB", "sysDescr", 0))
+    try:
+        raw_data = get_snmp_data(config, system_decription)
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_vars_to_dataset(dataset, raw_data, "sysDescr")
+
+    # Find device type
+    for family in SUPPORTED_SWITCH_FAMILY:
+        type_match = re.search(f"({family})", dataset["sysDescr"])
+        if type_match:
+            dataset["type"] = type_match.group(1)
+            break
+
+    if "type" not in dataset:
+        unknown_exit(SERVICE, f"Unsupported Hardware: {dataset['sysDescr']}")
+
+    # Find information based on type
+    if dataset["type"] in ["1910-24G", "1920-16G", "1920-24G"]:
+        if dataset["type"] == "1910-24G":
+            dataset["model_number"] = "JE006A"
+        if dataset["type"] == "1920-16G":
+            dataset["model_number"] = "JG923A"
+        if dataset["type"] == "1920-24G":
+            dataset["model_number"] = "JG924A"
+        description_match = re.search(
+            "Version ([0-9]+[.][0-9]+).*, Release ([0-9A-Z]+)", dataset["sysDescr"]
+        )
+        if description_match:
+            dataset["version"] = description_match.group(1)
+            dataset["release"] = description_match.group(2)
+            if dataset["type"] == "1910-24G":
+                dataset[
+                    "installed_version"
+                ] = f"1910_{dataset['version']}.R{dataset['release']}"
+            else:
+                dataset[
+                    "installed_version"
+                ] = f"{dataset['type']}-{dataset['model_number']}{dataset['version']}.R{dataset['release']}"
+        else:
+            unknown_exit(SERVICE, "Unable to get installed firmware version")
+
+    elif dataset["type"] in ["1820", "1920S"]:
+        description_match = re.search("[^,]* ([^,]*), ([^,]*),", dataset["sysDescr"])
+        if description_match:
+            dataset["model_number"] = description_match.group(1)
+            dataset["installed_version"] = description_match.group(2)
+        else:
+            unknown_exit(SERVICE, "Unable to get installed firmware version")
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "-m", "--model", default="HP", help="Switch model.",
+    )
+    add_common_snmp_args(parser)
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = {}
+
+    get_system_information(config, dataset)
+    dataset["model_number"] = dataset.get("model_number", config["model"])
+    # Get version via SNMP
+    if dataset["type"] in ["1810"]:
+        mib = "HP-httpManageable-MIB"
+        version_key = "hpHttpMgVersion"
+
+        # elif dataset["type"] == "1920S":
+        #    mib = "RMON2-MIB"
+        #   version_obect = "probeSoftwareRev"
+
+        version_obect = ObjectType(ObjectIdentity(mib, version_key, 0))
+
+        raw_data = get_snmp_data(config, version_obect)
+        add_vars_to_dataset(dataset, raw_data, version_key)
+        dataset["installed_version"] = dataset[version_key]
+    # Get latest version from web
+    if dataset["type"] in ["1820", "1920S"]:
+        find_version_from_jsdatafile(dataset)
+        # Fallback query
+        # find_version_from_web(dataset)
+    elif dataset["type"] in ["1810", "1910-24G", "1920-16G", "1920-24G"]:
+        find_version_from_web(dataset)
+
+    if "latest_version" not in dataset:
+        unknown_exit(SERVICE, "Unable to find latest update")
+
+    state, message = generate_output(dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

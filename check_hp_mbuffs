@@ -1,0 +1,164 @@
+#!/usr/bin/env python3
+"""check_hp_mbuffs
+
+Script checks if enough HP switch memory buffers are available.
+Currently tested only with 1920S switches.
+Memory buffer information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType, SnmpEngine
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_table_to_dataset,
+    add_vars_to_dataset,
+    check_snmp_args,
+    get_snmp_data,
+    get_snmp_table_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "SWITCH MBUFFs"
+
+
+def add_performace_data(config, dataset):
+    """Add perfdata to message string"""
+    message = " |"
+    message += (
+        f" 'usage'={dataset['mbuffs_used_percentage']}%"
+        f";{config['warning']};{config['critical']};0;100"
+    )
+    message += f" 'mbuffs_total'={dataset['mbuffs_total']};;;;"
+    message += (
+        f" 'mbuffs_used'={dataset['mbuffs_used']}" f";;;0;{dataset['mbuffs_total']}"
+    )
+    message += (
+        f" 'mbuffs_free'={dataset['mbuffs_free']}" f";;;{dataset['mbuffs_total']};0"
+    )
+    for traffic_class in dataset["traffic_classes"]:
+        message += (
+            f" '{traffic_class['name']} alloc "
+            f"attempts'={traffic_class['alloc_attempts']};;;;"
+            f" '{traffic_class['name']} alloc "
+            f"fails'={traffic_class['alloc_fails']};;;;"
+        )
+    return message
+
+
+def generate_output(config, dataset):
+    """Prepare message string and exit code"""
+
+    if dataset["mbuffs_used_percentage"] > config["critical"]:
+        state = "CRITICAL"
+    elif dataset["mbuffs_used_percentage"] > config["warning"]:
+        state = "WARNING"
+    else:
+        state = "OK"
+    message = (
+        f"{SERVICE} {state} - {dataset['mbuffs_used_percentage'] } % mbuffs used "
+        f"({dataset['agentSwitchMbufsUsed']}/{dataset['agentSwitchMbufsTotal']})"
+    )
+    message = message + add_performace_data(config, dataset)
+    return state, message
+
+
+def prepare_data(dataset):
+    """Parse mbuff data retrived via SNMP"""
+    dataset["mbuffs_used"] = int(dataset["agentSwitchMbufsUsed"])
+    dataset["mbuffs_total"] = int(dataset["agentSwitchMbufsTotal"])
+    dataset["mbuffs_free"] = int(dataset["agentSwitchMbufsFree"])
+    dataset["mbuffs_used_percentage"] = int(
+        dataset["mbuffs_used"] / dataset["mbuffs_total"] * 100
+    )
+    for traffic_class in dataset["traffic_classes"]:
+        traffic_class["name"] = traffic_class["agentSwitchMbufClassName"].strip("\x00")
+        traffic_class["alloc_attempts"] = int(
+            traffic_class["agentSwitchMbufAllocAttempts"]
+        )
+        traffic_class["alloc_fails"] = int(traffic_class["agentSwitchMbufAllocFails"])
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    add_common_snmp_args(parser)
+
+    parser.add_argument(
+        "-w",
+        "--warning",
+        type=int,
+        default=0,
+        help="Warning level of connected clients",
+    )
+    parser.add_argument(
+        "-c",
+        "--critical",
+        type=int,
+        default=0,
+        help="Critical level of connected clients",
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = {}
+    dataset["traffic_classes"] = []
+
+    hp_mbuff_name = ObjectType(
+        ObjectIdentity("HP-SWITCHING-MIB", "agentSwitchMbufClassName")
+    )
+    hp_mbuff_alloc_fails = ObjectType(
+        ObjectIdentity("HP-SWITCHING-MIB", "agentSwitchMbufAllocFails")
+    )
+    hp_mbuff_alloc_attempts = ObjectType(
+        ObjectIdentity("HP-SWITCHING-MIB", "agentSwitchMbufAllocAttempts")
+    )
+    snmp_engine = SnmpEngine()
+    try:
+        raw_data = get_snmp_table_data(
+            config,
+            hp_mbuff_name,
+            hp_mbuff_alloc_fails,
+            hp_mbuff_alloc_attempts,
+            snmp_engine=snmp_engine,
+        )
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+
+    add_table_to_dataset(dataset["traffic_classes"], raw_data, "")
+
+    hp_mbuff_total = ObjectType(
+        ObjectIdentity("HP-SWITCHING-MIB", "agentSwitchMbufsTotal", 0)
+    )
+    hp_mbuff_used = ObjectType(
+        ObjectIdentity("HP-SWITCHING-MIB", "agentSwitchMbufsUsed", 0)
+    )
+    hp_mbuff_free = ObjectType(
+        ObjectIdentity("HP-SWITCHING-MIB", "agentSwitchMbufsFree", 0)
+    )
+
+    try:
+        raw_data = get_snmp_data(
+            config,
+            hp_mbuff_total,
+            hp_mbuff_used,
+            hp_mbuff_free,
+            snmp_engine=snmp_engine,
+        )
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_vars_to_dataset(dataset, raw_data)
+
+    prepare_data(dataset)
+    state, message = generate_output(config, dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

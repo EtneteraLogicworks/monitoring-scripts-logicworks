@@ -1,0 +1,69 @@
+#!/usr/bin/env python3
+"""check_switch_poe_ports
+
+Script checks PoE switch port states.
+Information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_table_to_dataset,
+    check_snmp_args,
+    get_snmp_table_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "SWITCH PoE Ports"
+
+
+def generate_output(config, dataset):
+    """Prepare message string and exit code"""
+    state = "OK"
+    message = ""
+    power_counter = 0
+
+    for index, pse in enumerate(dataset):
+        if pse["pethPsePortDetectionStatus"] in ["faulty", "otherFault"]:
+            state = "CRITICAL"
+            message += f" Power problem with port {index}."
+        elif pse["pethPsePortDetectionStatus"] == "deliveringPower":
+            power_counter += 1
+
+    message += f" Ports delivering power: {power_counter}/{len(dataset)}"
+    message = f"{SERVICE} {state} -" + message
+    return state, message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = []
+
+    port_status = ObjectType(
+        ObjectIdentity("HP-POWER-ETHERNET-MIB", "pethPsePortDetectionStatus")
+    )
+
+    try:
+        raw_data = get_snmp_table_data(config, port_status)
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_table_to_dataset(dataset, raw_data)
+
+    state, message = generate_output(config, dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

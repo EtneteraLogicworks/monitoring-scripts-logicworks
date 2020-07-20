@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""check_switch_poe_pse
+
+Script checks PoE switch main PSE.
+Information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_table_to_dataset,
+    check_snmp_args,
+    get_snmp_table_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "SWITCH PoE PSE"
+
+
+def add_performace_data(config, dataset):
+    """Add perfdata to message string"""
+
+    warn = config["warning"] if config["warning"] else ""
+    crit = config["critical"] if config["critical"] else ""
+
+    message = " |"
+    for index, pse in enumerate(dataset):
+        message += f" 'PSE{index}'={pse['pethMainPseConsumptionPower']}"
+        message += f";{warn};{crit};0;"
+
+    return message
+
+
+def generate_output(config, dataset):
+    """Prepare message string and exit code"""
+    state = "OK"
+    message = ""
+
+    for index, pse in enumerate(dataset):
+        if pse["pethMainPseOperStatus"] == "faulty":
+            state = "CRITICAL"
+            message += f" Faulty PSE{index}."
+        if (
+            config["warning"]
+            and int(pse["pethMainPseConsumptionPower"]) > config["warning"]
+        ):
+            if state != "CRITICAL":
+                state = "WARNING"
+            message += f" PSE{index} Power consumtion over warning threshold."
+        if (
+            config["critical"]
+            and int(pse["pethMainPseConsumptionPower"]) > config["critical"]
+        ):
+            state = "CRITICAL"
+            message += f" PSE{index} Power consumtion over critical threshold."
+
+    if state == "OK":
+        message = " Nominal state"
+    message = f"{SERVICE} {state} -" + message
+    message = message + add_performace_data(config, dataset)
+    return state, message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+    parser.add_argument(
+        "-w", "--warning", type=int, help="Warning PSE power consumtions",
+    )
+    parser.add_argument(
+        "-c", "--critical", type=int, help="Critical PSE power consumtions",
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = []
+
+    pse_status = ObjectType(
+        ObjectIdentity("HP-POWER-ETHERNET-MIB", "pethMainPseOperStatus")
+    )
+    pse_power = ObjectType(
+        ObjectIdentity("HP-POWER-ETHERNET-MIB", "pethMainPseConsumptionPower")
+    )
+
+    try:
+        raw_data = get_snmp_table_data(config, pse_status, pse_power)
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_table_to_dataset(dataset, raw_data)
+
+    state, message = generate_output(config, dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

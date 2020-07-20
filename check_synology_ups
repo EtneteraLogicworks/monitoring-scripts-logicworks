@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""check_synology_ups
+
+Script check UPS connected to Synology:
+Information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_vars_to_dataset,
+    check_snmp_args,
+    decode_float,
+    get_snmp_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "SYNOLOGY UPS"
+
+UPS_STATES = {
+    "OL": "On line.",
+    "OB": "On battery.",
+    "LB": "Low battery.",
+    "HB": "High battery.",
+    "RB": "The battery needs to be replaced.",
+    "CHRG": "The battery is charging.",
+    "DISCHRG": "The battery is discharging.",
+    "BYPASS": "UPS bypass circuit is active - no battery protection is available.",
+    "CAL": "UPS is currently performing runtime calibration.",
+    "OFF": "UPS is offline and is not supplying power to the load.",
+    "OVER": "UPS is overloaded.",
+    "TRIM": "UPS is trimming incoming voltage.",
+    "BOOST": "UPS is boosting incoming voltage.",
+    "FSD": "Forced Shutdown.",
+}
+
+
+def add_performace_data(config, dataset):
+    """Add perfdata to message string"""
+    message = "|"
+    message += (
+        f" 'load'" f"={dataset['load']}%;{config['warning']};{config['critical']};;"
+    )
+    message += (
+        f" 'charge'"
+        f"={dataset['charge']}%;{dataset['charge_warn']};{dataset['charge_crit']};;"
+    )
+    return message
+
+
+def generate_output(config, dataset):
+    """Prepare message string and exit code"""
+
+    message = ""
+    for state in dataset["upsInfoStatus"].split(" "):
+        message += UPS_STATES.get(state, f"Unknown state {state}") + " "
+
+    if dataset["upsInfoStatus"] in ["OL", "OL CHRG"]:
+        state = "OK"
+    else:
+        state = "CRITICAL"
+
+    if dataset["charge"] < dataset["charge_crit"]:
+        message += (
+            f"Battery level {dataset['charge']}%"
+            f"bellow warning threshold {dataset['charge_crit']}%"
+        )
+    elif dataset["charge"] < dataset["charge_warn"]:
+        message += (
+            f"Battery level {dataset['charge']}%"
+            f"bellow warning threshold {dataset['charge_warn']}%"
+        )
+
+    message = f"{SERVICE} {state} - " + message + add_performace_data(config, dataset)
+    return state, message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+    parser.add_argument(
+        "-w",
+        "--warning",
+        type=int,
+        default=30,
+        help="Warning load threshold (percentage)",
+    )
+    parser.add_argument(
+        "-c",
+        "--critical",
+        type=int,
+        default=50,
+        help="Critical load threshold (percentage)",
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = {}
+
+    ups_load = ObjectType(ObjectIdentity("SYNOLOGY-UPS-MIB", "upsInfoLoadValue", 0))
+    ups_status = ObjectType(ObjectIdentity("SYNOLOGY-UPS-MIB", "upsInfoStatus", 0))
+    ups_battery_level = ObjectType(
+        ObjectIdentity("SYNOLOGY-UPS-MIB", "upsBatteryChargeValue", 0)
+    )
+    ups_onbattery_critical = ObjectType(
+        ObjectIdentity("SYNOLOGY-UPS-MIB", "upsBatteryChargeLow", 0)
+    )
+    ups_onbattery_warning = ObjectType(
+        ObjectIdentity("SYNOLOGY-UPS-MIB", "upsBatteryChargeWarning", 0)
+    )
+
+    try:
+        raw_data = get_snmp_data(
+            config,
+            ups_load,
+            ups_status,
+            ups_battery_level,
+            ups_onbattery_critical,
+            ups_onbattery_warning,
+        )
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_vars_to_dataset(dataset, raw_data)
+
+    dataset["load"] = int(decode_float(dataset["upsInfoLoadValue"]))
+    dataset["charge"] = int(decode_float(dataset["upsBatteryChargeValue"]))
+    dataset["charge_crit"] = int(decode_float(dataset["upsBatteryChargeLow"]))
+    dataset["charge_warn"] = int(decode_float(dataset["upsBatteryChargeWarning"]))
+
+    state, message = generate_output(config, dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

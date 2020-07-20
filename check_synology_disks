@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+"""check_synology_disks
+
+Script checks Synology disks problems and temperature.
+Information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_table_to_dataset,
+    check_snmp_args,
+    get_snmp_table_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "SYNOLOGY DISKS"
+DISK_STATUS = {
+    "1": "Normal",
+    "2": "Initialized",
+    "3": "NotInitialized",
+    "4": "SystemPartitionFailed",
+    "5": "Crashed",
+}
+
+
+def add_performace_data(config, dataset):
+    """Add perfdata to message string"""
+    message = ""
+    message += "|"
+    for disk in dataset:
+        message += (
+            f" 'temperature {disk['diskID']}'"
+            f"={disk['diskTemperature']};{config['warning']};{config['critical']};;"
+        )
+    return message
+
+
+def generate_output(config, dataset):
+    """Prepare message string and exit code"""
+    state = "OK"
+    message = ""
+
+    for disk in dataset:
+        disk_status = DISK_STATUS.get(disk["diskStatus"], "Unknown")
+        disk_temperature = int(disk["diskTemperature"])
+        if disk_status in ["Crashed", "SystemPartitionFailed"]:
+            state = "CRITICAL"
+            message += f"Disk {disk['diskID']} state critical: {disk_status}. "
+        elif disk_status != "Normal":
+            if state != "CRITICAL":
+                state = "WARNING"
+            message += f"Disk {disk['diskID']} state warning: {disk_status}. "
+        if disk_temperature > config["critical"]:
+            state = "CRITICAL"
+            message += (
+                f"Disk {disk['diskID']} tempeterature critical: {disk_temperature}°C. "
+            )
+        elif disk_temperature > config["warning"]:
+            if state != "CRITICAL":
+                state = "WARNING"
+            message += (
+                f"Disk {disk['diskID']} tempeterature warning: {disk_temperature}°C. "
+            )
+
+    if state == "OK":
+        message = "All disks in Normal state "
+
+    message = f"{SERVICE} {state} - " + message + add_performace_data(config, dataset)
+    return state, message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+    parser.add_argument(
+        "-w",
+        "--warning",
+        type=int,
+        default=40,
+        help="Warning disk temperature threshold (Celsius)",
+    )
+    parser.add_argument(
+        "-c",
+        "--critical",
+        type=int,
+        default=60,
+        help="Critical disk temperature threshold (Celsius)",
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = []
+
+    disk_id = ObjectType(ObjectIdentity("SYNOLOGY-DISK-MIB", "diskID"))
+    disk_status = ObjectType(ObjectIdentity("SYNOLOGY-DISK-MIB", "diskStatus"))
+    disk_temperature = ObjectType(
+        ObjectIdentity("SYNOLOGY-DISK-MIB", "diskTemperature")
+    )
+
+    try:
+        raw_data = get_snmp_table_data(config, disk_id, disk_status, disk_temperature,)
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+
+    add_table_to_dataset(dataset, raw_data)
+
+    state, message = generate_output(config, dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

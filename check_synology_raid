@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""check_synology_raid
+
+Script checks Synology raid arrays for problems.
+Information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_table_to_dataset,
+    check_snmp_args,
+    get_snmp_table_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "SYNOLOGY RAID"
+DISK_STATUS = {
+    "1": "Normal",
+    "2": "Repairing",
+    "3": "Migrating",
+    "4": "Expanding",
+    "5": "Deleting",
+    "6": "Creating",
+    "7": "RaidSyncing",
+    "8": "RaidParityChecking",
+    "9": "RaidAssembling",
+    "10": "Canceling",
+    "11": "Degrade",
+    "12": "Crashed",
+    "13": "DataScrubbing",
+    "14": "RaidDeploying",
+    "15": "RaidUnDeploying",
+    "16": "RaidMountCache",
+    "17": "RaidUnmountCache",
+    "18": "RaidExpandingUnfinishedSHR",
+    "19": "RaidConvertSHRToPool",
+    "20": "RaidMigrateSHR1ToSHR2",
+    "21": "RaidUnknownStatus",
+}
+
+
+def generate_output(dataset):
+    """Prepare message string and exit code"""
+    state = "OK"
+    message = ""
+
+    for raid in dataset:
+        raid_status = DISK_STATUS.get(raid["raidStatus"], "Unknown")
+        if raid_status in ["Degrade", "Crashed", "RaidUnknownStatus", "Unknown"]:
+            state = "CRITICAL"
+            message += f"Array {raid['raidName']} state critical: {raid_status}. "
+        elif raid_status not in ["Normal", "DataScrubbing"]:
+            if state != "CRITICAL":
+                state = "WARNING"
+            message += f"Array {raid['raidName']} state warning: {raid_status}. "
+        else:
+            message += f"Array {raid['raidName']} state ok: {raid_status}. "
+
+    message = f"{SERVICE} {state} - " + message
+    return state, message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = []
+
+    raid_name = ObjectType(ObjectIdentity("SYNOLOGY-RAID-MIB", "raidName"))
+    raid_status = ObjectType(ObjectIdentity("SYNOLOGY-RAID-MIB", "raidStatus"))
+
+    try:
+        raw_data = get_snmp_table_data(config, raid_name, raid_status)
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+
+    add_table_to_dataset(dataset, raw_data)
+
+    state, message = generate_output(dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

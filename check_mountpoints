@@ -1,0 +1,38 @@
+#!/bin/bash
+#
+# Simple script to check that all filesystems in fstab are mounted
+
+set -o nounset
+set -o errexit
+
+# get list of mounted filesystem paths from fstab
+# sed will strip comments, awk will print paths (without 'none' obviously)
+path_list=$(
+    sed 's/#.*//; /^\s*$/d' /etc/fstab \
+      | awk '
+            $2 != "none" && $2 != "" { print $2 }'
+)
+
+# basic sanity check
+[ -n "$path_list" ] || {
+    echo "WARNING: no mountpoints were found"
+    exit 1
+}
+
+# check all path in the list
+rc=0
+message=""
+while read path; do
+    mountpoint -q "$path" || {
+        message="'${message}${path}' is not mounted, "
+        rc=2
+    }
+done <<< "$path_list"
+
+if [ "$rc" == "0" ]; then
+    echo "OK: all mounts are OK"
+elif [ "$rc" == "2" ]; then
+    echo "CRITICAL: $message"
+fi
+
+exit "$rc"

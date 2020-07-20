@@ -1,0 +1,18 @@
+#!/bin/bash
+
+if [ -f /bin/systemctl ]; then
+	failed=$(/bin/systemctl --failed --no-legend)
+	failed=${failed/ */}		# Strip everything after first space
+	failed=${failed/.service/}	# Strip .service suffix
+
+	if [ "$failed" != "" ]; then
+		echo "Failed units: $failed"
+		exit 1
+	else
+		echo "No failed units."
+		exit 0
+	fi
+else
+	echo "No systemd. Nothing was checked!"
+	exit 0
+fi

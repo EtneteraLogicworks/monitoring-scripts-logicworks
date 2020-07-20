@@ -1,0 +1,57 @@
+#!/bin/bash
+
+while getopts "d:n:w:c:" OPT; do
+    case $OPT in
+        "d") device=$OPTARG;;
+        "n") count=$OPTARG;;
+        "w") warning=$OPTARG;;
+        "c") critical=$OPTARG;;
+        \?) echo "Invalid option: -$OPTARG" >&2
+        exit 3
+        ;;
+    esac
+done
+
+if [ -z "$device" ]; then
+    device="disk0"
+fi
+
+if [ -z "$count" ]; then
+    count="3"
+fi
+
+data="$(iostat -c $count -d $device | tail -n 1 | tr -s ' ' ';')"
+
+kbt=$(echo "$data" | cut -d';' -f 2)
+comment="${kbt} KB/t"
+perfdata="'kbytes_tranfer'=${kbt};;;;"
+
+tps=$(echo "$data" | cut -d';' -f 3)
+comment="${comment} ${tps} tps"
+perfdata="${perfdata} 'transfers_sec'=${tps};${warning};${critical};;"
+
+mbs=$(echo "$data" | cut -d';' -f 4)
+comment="${comment} ${mbs} MB/s"
+perfdata="${perfdata} 'mbytes_sec'=${mbs};;;;"
+
+
+if [ -z "$critical" ]; then
+    critical="99999"
+fi
+
+if (( $(echo "${tps}>${critical}" | bc -l) )); then
+    echo "CRITICAL - I/O stats: (tps above ${critical}) ${comment} | ${perfdata}"
+    exit 2
+fi
+
+if [ -z "$warning" ]; then
+    warning="99999"
+fi
+
+if (( $(echo "${tps}>${warning}" | bc -l) )); then
+    echo "WARNING - I/O stats: (tps above ${warning}) ${comment} | ${perfdata}"
+    exit 1
+fi
+
+echo "OK - I/O stats: ${comment} | ${perfdata}"
+exit 0

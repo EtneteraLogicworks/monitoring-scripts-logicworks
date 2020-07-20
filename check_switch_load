@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""check_switch_load
+
+Script checks switch cpu load.
+Information is retrieved via SNMPv3 using pysnmp library.
+Currently tested with HP 1920S (HP family)
+"""
+
+import argparse
+import re
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_table_to_dataset,
+    add_vars_to_dataset,
+    check_snmp_args,
+    get_snmp_data,
+    get_snmp_table_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "SWITCH CPU load"
+
+
+def parse_threshold(threshold):
+    """Parse load threshold string"""
+    threshold_dict = {}
+    threshold_match = re.search("^([0-9.]+),([0-9.]+),([0-9.]+)$", threshold)
+    if threshold_match:
+        threshold_dict[f"load1"] = float(threshold_match.group(1))
+        threshold_dict[f"load5"] = float(threshold_match.group(2))
+        threshold_dict[f"load15"] = float(threshold_match.group(2))
+    else:
+        unknown_exit(SERVICE, f"Unable to parse threshold {threshold}")
+    return threshold_dict
+
+
+def add_performace_data(dataset):
+    """Add perfdata to message string"""
+    message = " | "
+    message += (
+        f"'load1'={dataset['load']['load1']}"
+        f";{dataset['load_warning']['load1']};{dataset['load_critical']['load1']};0;1 "
+    )
+    message += (
+        f"'load5'={dataset['load']['load5']}"
+        f";{dataset['load_warning']['load5']};{dataset['load_critical']['load5']};0;1 "
+    )
+    message += (
+        f"'load15'={dataset['load']['load15']}"
+        f";{dataset['load_warning']['load15']};{dataset['load_critical']['load15']};0;1"
+    )
+    return message
+
+
+def generate_output(dataset):
+    """Prepare message string and exit code"""
+    state = "OK"
+
+    if (
+        dataset["load"]["load1"] >= dataset["load_critical"]["load1"]
+        or dataset["load"]["load5"] >= dataset["load_critical"]["load5"]
+        or dataset["load"]["load15"] >= dataset["load_critical"]["load15"]
+    ):
+        state = "CRITICAL"
+    elif (
+        dataset["load"]["load1"] >= dataset["load_warning"]["load1"]
+        or dataset["load"]["load5"] >= dataset["load_warning"]["load5"]
+        or dataset["load"]["load15"] >= dataset["load_warning"]["load15"]
+    ):
+        state = "WARNING"
+
+    message = (
+        f"{SERVICE} {state} - "
+        f"{dataset['load']['load1']},"
+        f"{dataset['load']['load5']},"
+        f"{dataset['load']['load15']}"
+    )
+    message = message + add_performace_data(dataset)
+    return state, message
+
+
+def parse_hp_load(cpu_load):
+    """Parse HP CPU load string"""
+    load_dict = {}
+    load_match = re.search(
+        "60 Secs \\([ ]*([0-9.]*?)%.*300 Secs \\([ ]*([0-9.]*?)%", cpu_load
+    )
+    if load_match:
+        load_dict["load1"] = round(float(load_match.group(1)) / 100, 2)
+        load_dict["load5"] = round(float(load_match.group(2)) / 100, 2)
+        load_dict["load15"] = 0
+    else:
+        unknown_exit(SERVICE, f"Unable to parse HP switch load {cpu_load}")
+    return load_dict
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+    parser.add_argument(
+        "-w", "--warning", default="0.8,0.7,0.6", help="Warning load thresholds",
+    )
+    parser.add_argument(
+        "-c", "--critical", default="0.9,0.8,0.7", help="Critical load thresholds",
+    )
+    parser.add_argument(
+        "-f", "--family", help="Switch family. Supported families: 1920S, EdgeSwitchXP",
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+    dataset = {}
+    dataset["load_warning"] = parse_threshold(config["warning"])
+    dataset["load_critical"] = parse_threshold(config["critical"])
+    dataset2 = []
+
+    if config["family"] == "1920S":
+        cpu = ObjectType(
+            ObjectIdentity(
+                "HP-SWITCHING-MIB", "agentSwitchCpuProcessTotalUtilization", 0
+            )
+        )
+    elif config["family"] == "EdgeSwitchXP":
+        cpu = ObjectType(ObjectIdentity("FROGFOOT-RESOURCES-MIB", "loadValue"))
+    else:
+        unknown_exit(SERVICE, f"Switch family {config['family']} NOT known")
+
+    try:
+        if config["family"] == "EdgeSwitchXP":
+            raw_data = get_snmp_table_data(config, cpu, snmpversion="1")
+            add_table_to_dataset(dataset2, raw_data)
+        else:
+            raw_data = get_snmp_data(config, cpu)
+            add_vars_to_dataset(dataset, raw_data)
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+
+    if config["family"] == "1920S":
+        dataset["load"] = parse_hp_load(
+            dataset["agentSwitchCpuProcessTotalUtilization"]
+        )
+    elif config["family"] == "EdgeSwitchXP":
+        dataset["load"] = {
+            "load1": round(float("0." + dataset2[0]["loadValue"]), 2),
+            "load5": round(float("0." + dataset2[1]["loadValue"]), 2),
+            "load15": round(float("0." + dataset2[2]["loadValue"]), 2),
+        }
+    else:
+        unknown_exit(SERVICE, f"Switch family {config['family']} NOT known")
+
+    state, message = generate_output(dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

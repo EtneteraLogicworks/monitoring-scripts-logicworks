@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""check_link_aggregation
+
+Script checks if Ethernet link aggregation is in good shape for group of defined ports .
+Information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType, SnmpEngine
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_vars_to_dataset,
+    check_snmp_args,
+    get_snmp_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "LINK AGGREGATION"
+
+
+def parse_interace_info(interface_info):
+    """Parse interface aggregation flags"""
+    for interface in interface_info:
+        operstate = interface["dot3adAggPortActorOperState"][0]
+        if operstate & 1:
+            interface["type"] = "active"
+        else:
+            interface["type"] = "passive"
+        if operstate & 2:
+            interface["timeout"] = "long"
+        else:
+            interface["timeout"] = "short"
+        if operstate & 4:
+            interface["aggregating"] = True
+        if operstate & 8:
+            interface["synced"] = True
+        if operstate & 16:
+            interface["collecting"] = True
+        if operstate & 32:
+            interface["distributing"] = True
+        if operstate & 64:
+            interface["configuration"] = "static"
+        else:
+            interface["configuration"] = "dynamic"
+        if operstate & 128:
+            interface["expired"] = True
+
+
+def check_if_configuration_differs(interface_info):
+    """Compare interface aggregation configuration"""
+
+    for index, interface in enumerate(interface_info):
+        interface_info[index]["type"] = (
+            f"{interface['type']}, "
+            f"{interface['configuration']}, "
+            f"{interface['timeout']} timeout, "
+            f"agregation group {interface['dot3adAggPortSelectedAggID']}"
+        )
+        if index > 0:
+            if interface_info[index]["type"] != interface_info[index - 1]["type"]:
+                return True
+    return False
+
+
+def generate_output(interface_info, config):
+    """Prepare message string and exit code"""
+
+    parse_interace_info(interface_info)
+
+    configuration_differs = check_if_configuration_differs(interface_info)
+    if configuration_differs:
+        state = "CRITICAL"
+    else:
+        state = "OK"
+
+    if configuration_differs:
+        message = "Interface configurations DIFFERS!"
+    else:
+        message = f"Aggregation Type: {interface_info[0]['type']};"
+
+    for interface in interface_info:
+        interface["state"] = "OK"
+        interface["problems"] = ""
+        interface["nominal"] = ""
+
+        if interface.get("expired") and not config["noexpire"]:
+            interface["state"] = "CRITICAL"
+            state = "CRITICAL"
+            interface["problems"] += " expired,"
+        else:
+            interface["nominal"] += " not expired,"
+        for istate in ["distributing", "collecting", "synced", "aggregating"]:
+            if not interface.get(istate):
+                interface["state"] = "CRITICAL"
+                state = "CRITICAL"
+                interface["problems"] += f" not {istate},"
+            else:
+                interface["nominal"] += f" {istate},"
+
+        message += f" Interface {interface['interface']} {interface['state']}:"
+        if interface["problems"]:
+            message += f"{interface['problems'].strip(',')}"
+        elif interface["nominal"]:
+            message += f"{interface['nominal'].strip(',')}"
+        if configuration_differs:
+            message += f" (type = {interface['type']});"
+
+    message = f"{SERVICE} {state} - {message}"
+    return state, message
+
+
+def get_port_aggregation_flags(config, interface_info, interface, snmp_engine):
+    """Get aggregation flags"""
+
+    port_aggregation_state = ObjectType(
+        ObjectIdentity("LAG-MIB", "dot3adAggPortActorOperState", interface)
+    )
+
+    try:
+        raw_data = get_snmp_data(
+            config, port_aggregation_state, snmp_engine=snmp_engine
+        )
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_vars_to_dataset(
+        interface_info[-1], raw_data, "dot3adAggPortActorOperState", raw_output=True
+    )
+
+
+def get_port_aggregation_group(config, interface_info, interface, snmp_engine):
+    """Get aggregation group"""
+    port_aggregation_group = ObjectType(
+        ObjectIdentity("LAG-MIB", "dot3adAggPortSelectedAggID", interface)
+    )
+    try:
+        raw_data = get_snmp_data(
+            config, port_aggregation_group, snmp_engine=snmp_engine
+        )
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_vars_to_dataset(interface_info[-1], raw_data, "dot3adAggPortSelectedAggID")
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+
+    parser.add_argument(
+        "-i",
+        "--interfaces",
+        required=True,
+        help="Comma delimited list interfaces in numeric format '1,2,3,...'",
+    )
+    parser.add_argument(
+        "-e",
+        "--noexpire",
+        default=False,
+        action="store_true",
+        help="Some switches always report LACP state as expired. Ignore it.",
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    interface_info = []
+    snmp_engine = SnmpEngine()
+
+    for interface in config["interfaces"].split(","):
+        interface_info.append({"interface": interface})
+        get_port_aggregation_flags(config, interface_info, interface, snmp_engine)
+        get_port_aggregation_group(config, interface_info, interface, snmp_engine)
+    state, message = generate_output(interface_info, config)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

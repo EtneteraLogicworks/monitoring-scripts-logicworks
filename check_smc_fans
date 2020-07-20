@@ -1,0 +1,87 @@
+#!/usr/bin/ruby
+
+require 'set'
+
+def add_perf_data(fans)
+  perfdata = ' |'
+  fans.each do |fan|
+    perfdata += " '#{fan[:name]}(#{fan[:id]})'=#{fan[:speed]};"
+    perfdata += ";;#{fan[:min]};#{fan[:max]}" # min;max
+  end
+  perfdata
+end
+
+def generete_message(state, fans)
+  if state[:status] == 0
+    message = 'Fans ok'
+  else
+    message = 'WARNING' if state[:status] == 1
+    message = 'CRICITAL' if state[:status] == 2
+    unless state[:fans_warn].empty?
+      message +=  ' fans warning: '
+      message += state[:fans_warn].to_a.join(',')
+    end
+    unless state[:fans_crit].empty?
+      message +=  ' fans critical: '
+      message += state[:fans_crit].to_a.join(',')
+    end
+  end
+  message += add_perf_data(fans)
+  message
+end
+
+def parse_line(line, fan)
+  # Beware. Colorize terminal sequences in line string
+  fan[:min] = line[/([[:digit:]]{1,5}) RPM/,1].to_i if line =~ /Min/
+  fan[:max] = line[/([[:digit:]]{1,5}) RPM/,1].to_i  if line =~ /Max/
+  fan[:speed] = line[/([[:digit:]]{1,5}) RPM/,1].to_i if line =~ /Current/
+end
+
+def parse_input(raw_input)
+  fans = []
+  raw_input.each_line do |line|
+    regex = /^\[id ([[:digit:]]{1,2})\] ([[:alnum:]]*)/
+    if line =~ regex
+      fans.push( { id: line[regex,1], name: line[regex,2] } )
+      next
+    end
+    parse_line(line, fans.last) unless fans.empty?
+  end
+  return nil if fans.empty?
+  fans
+end
+
+def check(fan, state)
+  if fan[:speed] < fan[:min] - fan[:min] / 10
+    state[:status] = 2
+    state[:fans_crit].add(fan[:name])
+  elsif fan[:speed] > fan[:max]
+    state[:status] = 1 if state[:status] < 1
+    state[:fans_warn].add(fan[:name])
+  end
+end
+
+def process_input(raw_input)
+  fans = parse_input(raw_input)
+  state = { status: 0, fans_warn: Set.new, fans_crit: Set.new  }
+  if fans
+    fans.each { |fan| check(fan, state) }
+  else
+    puts 'No fans detected'
+    exit 3
+  end
+  [ fans, state ]
+end
+
+def main
+  begin
+    raw_input = `/opt/local/bin/smckit -f`
+  rescue
+    puts "Unable to execute 'smckit -f'"
+    exit 3
+  end
+  fans, state = process_input(raw_input)
+  puts generete_message(state, fans)
+   exit state[:status]
+end
+main

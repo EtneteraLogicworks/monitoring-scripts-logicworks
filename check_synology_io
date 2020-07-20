@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""check_synology_deviceio
+
+Script checks Synology disk IO.
+Information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_table_to_dataset,
+    check_snmp_args,
+    get_snmp_table_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "SYNOLOGY IO"
+
+
+def add_performace_data(config, dataset):
+    """Add perfdata to message string"""
+
+    mode = config["mode"]
+    bytes_read = dataset[f"{mode}IONReadX"]
+    bytes_written = dataset[f"{mode}IONWrittenX"]
+    io_read = dataset[f"{mode}IOReads"]
+    io_write = dataset[f"{mode}IOWrites"]
+    io_load1 = dataset[f"{mode}IOLA1"]
+    io_load5 = dataset[f"{mode}IOLA5"]
+    io_load15 = dataset[f"{mode}IOLA15"]
+
+    message = " |"
+    message += f" 'bytes read'" f"={bytes_read}c;;;;"
+    message += f" 'bytes written'" f"={bytes_written}c;;;;"
+    message += f" 'IO read'" f"={io_read}c;;;;"
+    message += f" 'IO write'" f"={io_write}c;;;;"
+    message += f" 'IO load1'" f"={io_load1};;;;"
+    message += f" 'IO load5'" f"={io_load5};;;;"
+    message += f" 'IO load15'" f"={io_load15};;;;"
+    return message
+
+
+def generate_output(config, dataset):
+    """Prepare message string and exit code"""
+    state = "OK"
+    message = ""
+
+    if state == "OK":
+        message += f"IO is nominal for {config['name']}"
+    else:
+        message += f"IO over limit for {config['name']}"
+
+    message = f"{SERVICE} {state} - " + message + add_performace_data(config, dataset)
+    return state, message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+    parser.add_argument(
+        "-n", "--name", help="device or volume name",
+    )
+    parser.add_argument(
+        "-m", "--mode", help="Modes: storage (default) or space", default="storage"
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    mode = config["mode"]
+    dataset = []
+
+    if mode == "storage":
+        mib = "SYNOLOGY-STORAGEIO-MIB"
+    elif mode == "space":
+        mib = "SYNOLOGY-SPACEIO-MIB"
+    else:
+        unknown_exit(SERVICE, f"Unsupported type {mode}")
+
+    dev_name = ObjectType(ObjectIdentity(mib, f"{mode}IODevice"))
+    read_bytes = ObjectType(ObjectIdentity(mib, f"{mode}IONReadX"))
+    write_bytes = ObjectType(ObjectIdentity(mib, f"{mode}IONWrittenX"))
+    read_io = ObjectType(ObjectIdentity(mib, f"{mode}IOReads"))
+    write_io = ObjectType(ObjectIdentity(mib, f"{mode}IOWrites"))
+    io_load_1 = ObjectType(ObjectIdentity(mib, f"{mode}IOLA1"))
+    io_load_5 = ObjectType(ObjectIdentity(mib, f"{mode}IOLA5"))
+    io_load_15 = ObjectType(ObjectIdentity(mib, f"{mode}IOLA15"))
+
+    try:
+        raw_data = get_snmp_table_data(
+            config,
+            dev_name,
+            read_bytes,
+            write_bytes,
+            read_io,
+            write_io,
+            io_load_1,
+            io_load_5,
+            io_load_15,
+        )
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+
+    add_table_to_dataset(dataset, raw_data)
+
+    io_dataset = {}
+    for item in dataset:
+        iodevice = f"{mode}IODevice"
+        if item[iodevice] == config["name"]:
+            io_dataset = item
+    if not io_dataset:
+        unknown_exit(SERVICE, f"{config['name']} NOT found")
+
+    state, message = generate_output(config, io_dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

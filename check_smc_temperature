@@ -1,0 +1,180 @@
+#!/usr/bin/ruby
+# Author: Michal Moravec <michal.moravec@macadmin.cz>
+
+require 'optparse'
+require 'yaml'
+require 'set'
+
+Encoding.default_external = Encoding::UTF_8
+Encoding.default_internal = Encoding::UTF_8
+
+options = {}
+optparse = OptionParser.new do |opts|
+  opts.banner = "Usage: check_smc_temperature.rb [options]"
+
+  opts.on("-w", "--warning FLOAT", Float, "Warning temperature threshold") do |w|
+    options[:warning] = w
+  end
+
+  opts.on("-c", "--critical FLOAT", Float, "Critical temperature threshold") do |c|
+    options[:critical] = c
+  end
+
+   opts.on("-l", "--library PATH", String, "[REQUIRED] Temperature sensor library") do |l|
+    options[:library] = l
+   end
+end
+
+begin
+  optparse.parse!
+  mandatory = [:library]
+  missing = mandatory.select{ |param| options[param].nil? }
+  unless missing.empty?
+    raise OptionParser::MissingArgument.new(missing.join(', '))
+  end
+rescue OptionParser::InvalidOption, OptionParser::MissingArgument
+  puts $!.to_s
+  puts optparse
+  exit 3
+end
+
+# + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + + +
+
+def get_model_identifier()
+  begin
+    model_identifier = `system_profiler SPHardwareDataType | grep "Model Identifier"`
+    model_identifier = model_identifier[/Model Identifier: (.*)$/,1].strip
+  rescue
+    puts "UNKNOWN - Unable to get Mac Model Identifier"
+    exit 3
+  end
+  model_identifier
+end
+
+def add_perf_data(temps)
+  perfdata = ' |'
+  temps.each do |temp|
+    perfdata += " '#{temp[:name]} (#{temp[:id]})'=#{temp[:temperature].to_i};"
+    perfdata += temp[:warning].to_s if temp[:warning]
+    perfdata += ';'
+    perfdata += temp[:critical].to_s if temp[:critical]
+    perfdata += ';0;100' # min;max
+  end
+  perfdata
+end
+
+def generete_message(state, temps, options)
+  if state[:status] == 0
+    message = 'Temperatures ok'
+  else
+    message = 'WARNING' if state[:status] == 1
+    message = 'CRICITAL' if state[:status] == 2
+    unless state[:sensors_warn].empty?
+      message +=  ' sensors warning: '
+      message += state[:sensors_warn].to_a.join(',')
+    end
+    unless state[:sensors_crit].empty?
+      message +=  ' sensors critical: '
+      message += state[:sensors_crit].to_a.join(',')
+    end
+  end
+  message += " g_warn: #{options[:warning]}" if options[:warning]
+  message += " g_crit: #{options[:critical]}" if options[:critical]
+  message += add_perf_data(temps)
+  message
+end
+
+# - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
+
+def parse_line(line)
+  #ODD_PROXIMITY     (TO0P)  44.0°C
+  #Unknown   (TC0h)  39.0°C
+  sensor_id = line[/\(([[:alnum:]]{4})\)/,1]
+  sensor_temperature = line[/[[:digit:]]{1,3}\.[[:digit:]]/].to_f
+  { id: sensor_id, temperature: sensor_temperature }
+end
+
+
+def identify_sensor(p_line, model_identifier, library)
+  if library['temp_data']["#{model_identifier}"]
+    if library['temp_data']["#{model_identifier}"].key? p_line[:id]
+      sensor = library['temp_data'][model_identifier][p_line[:id]]
+      p_line[:name] = sensor['name']
+      p_line[:warning] = sensor['warning'] if sensor['warning']
+      p_line[:critical] = sensor['critical'] if sensor['critical']
+    else
+      p_line[:name] = 'Unknown'
+    end
+  else
+    puts "UNKNOWN - Model Identifier: #{model_identifier} not in library"
+    exit 3
+  end
+end
+
+def parse_input(raw_input, library)
+  temps = []
+  model_identifier = get_model_identifier()
+  raw_input.each_line do |line|
+    if line.strip =~ /.* \(T...\).*$/
+      p_line = parse_line(line)
+      identify_sensor(p_line, model_identifier, library)
+      temps.push(p_line) unless p_line[:name] == 'Unknown'
+    end
+  end
+  return nil if temps.empty?
+  temps
+end
+
+def check(temp, options, state)
+  if temp[:critical] and temp[:temperature] > temp[:critical]
+    state[:status] = 2
+    state[:sensors_crit].add(temp[:id])
+  end
+  if options[:critical] and temp[:temperature] > options[:critical]
+    state[:status] = 2
+    state[:sensors_crit].add(temp[:id])
+  end
+  if temp[:warning] and temp[:temperature] > temp[:warning]
+    state[:status] = 1 if state[:status] < 1
+    state[:sensors_warn].add(temp[:id]) unless state[:sensors_crit].include?(temp[:id])
+  end
+  if options[:warning] and temp[:temperature] > options[:warning]
+    state[:status] = 1 if state[:status] < 1
+    state[:sensors_warn].add(temp[:id]) unless state[:sensors_crit].include?(temp[:id])
+  end
+end
+
+def load_library(path)
+  begin
+    library = YAML.load_file(path)
+  rescue
+    puts "UNKNOWN - Unable to load sensor Library #{path}"
+    exit 3
+  end
+  library
+end
+
+def process_input(raw_input, options)
+  temps = parse_input(raw_input, load_library(options[:library]))
+  state = { status: 0, sensors_warn: Set.new, sensors_crit: Set.new }
+  if temps
+    temps.each { |temp| check(temp, options, state) }
+  else
+    puts "UNKNOWN - No temperature sensors detected"
+    exit 3
+  end
+  [ state, temps ]
+end
+
+def main(options)
+  begin
+    raw_input = `/opt/local/bin/smckit -tud`
+  rescue
+    puts  "UNKNOWN - Unable to execute 'smckit -tud '"
+    exit 3
+  end
+  state, temps = process_input(raw_input, options)
+  puts generete_message(state, temps, options)
+  exit state[:status]
+end
+main(options)

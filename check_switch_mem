@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""check_switch_mem
+
+Script checks switch memory usage.
+Information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_vars_to_dataset,
+    check_snmp_args,
+    get_snmp_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "SWITCH MEM"
+
+
+def check_thresholds(config):
+    """Check input thresholds arguments"""
+    ranger = range(0, 100)
+    if config["warning"] not in ranger or config["critical"] not in ranger:
+        unknown_exit(SERVICE, "Bad args: Bogus warn/crit thresholds")
+
+
+def add_performace_data(config, dataset):
+    """Add perfdata to message string"""
+    message = ""
+    warn_kb = int(config["critical"] / 100 * dataset["mem_total"])
+    inverted_warn_kb = dataset["mem_total"] - warn_kb
+    crit_kb = int(config["warning"] / 100 * dataset["mem_total"])
+    inverted_crit_kb = dataset["mem_total"] - crit_kb
+    message += " |"
+    message += f" 'TOTAL'" f"={dataset['mem_total']}KB;;;;"
+    message += (
+        f" 'USED'"
+        f"={dataset['memory_used']}KB;{warn_kb};{crit_kb};0;{dataset['mem_total']}"
+    )
+    message += (
+        f" 'FREE'"
+        f"={dataset['mem_free']}KB"
+        f";{inverted_warn_kb};{inverted_crit_kb};0;{dataset['mem_total']}"
+    )
+    return message
+
+
+def generate_output(config, dataset):
+    """Prepare message string and exit code"""
+    state = "OK"
+
+    if dataset["memory_usage"] >= config["critical"]:
+        state = "CRITICAL"
+    elif dataset["memory_usage"] >= config["warning"]:
+        state = "WARNING"
+
+    message = (
+        f"{SERVICE} {state} - {dataset['memory_usage']} % "
+        f"({dataset['memory_used']} kB) used"
+    )
+    message = message + add_performace_data(config, dataset)
+    return state, message
+
+
+def calculcate_usage(dataset):
+    """Calculate missing usage values"""
+    if not dataset.get("memory_usage"):
+        dataset["memory_usage"] = 100 - int(
+            dataset["mem_free"] / dataset["mem_total"] * 100
+        )
+
+    if not dataset.get("mem_free"):
+        dataset["mem_free"] = int(dataset["mem_total"] * dataset["memory_usage"] / 100)
+
+    dataset["memory_used"] = dataset["mem_total"] - dataset["mem_free"]
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+    parser.add_argument(
+        "-w",
+        "--warning",
+        type=int,
+        default=70,
+        help="Warning memory usage percentage (0-100)",
+    )
+    parser.add_argument(
+        "-c",
+        "--critical",
+        type=int,
+        default=90,
+        help="Critical memory usage percentage (0-100)",
+    )
+    parser.add_argument(
+        "-f",
+        "--family",
+        required=True,
+        help="Switch family. Supported families: 1910, 1920, 1920S, EdgeSwitchXP",
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+    check_thresholds(config)
+
+    dataset = {}
+
+    if config["family"] == "1920S":
+        mem1 = ObjectType(
+            ObjectIdentity("HP-SWITCHING-MIB", "agentSwitchCpuProcessMemAvailable", 0)
+        )
+        mem2 = ObjectType(
+            ObjectIdentity("HP-SWITCHING-MIB", "agentSwitchCpuProcessMemFree", 0)
+        )
+    elif config["family"] in ["1910", "1920"]:
+        mem1 = ObjectType(
+            ObjectIdentity("HH3C-ENTITY-EXT-MIB", "hh3cEntityExtMemSize", 8)
+        )
+        mem2 = ObjectType(
+            ObjectIdentity("HH3C-ENTITY-EXT-MIB", "hh3cEntityExtMemUsage", 8)
+        )
+    elif config["family"] == "EdgeSwitchXP":
+        mem1 = ObjectType(ObjectIdentity("FROGFOOT-RESOURCES-MIB", "memTotal", 0))
+        mem2 = ObjectType(ObjectIdentity("FROGFOOT-RESOURCES-MIB", "memFree", 0))
+    else:
+        unknown_exit(SERVICE, f"Switch family {config['family']} NOT known")
+
+    try:
+        snmpversion = "1" if config["family"] == "EdgeSwitchXP" else "2c"
+        raw_data = get_snmp_data(config, mem1, mem2, snmpversion=snmpversion)
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_vars_to_dataset(dataset, raw_data)
+
+    if config["family"] == "1920S":
+        dataset["mem_total"] = int(dataset["agentSwitchCpuProcessMemAvailable"])
+        dataset["mem_free"] = int(dataset["agentSwitchCpuProcessMemFree"])
+    elif config["family"] in ["1910", "1920"]:
+        dataset["mem_total"] = int(int(dataset["hh3cEntityExtMemSize"]) / 1000)
+        dataset["memory_usage"] = int(dataset["hh3cEntityExtMemUsage"])
+    elif config["family"] == "EdgeSwitchXP":
+        dataset["mem_total"] = int(dataset["memTotal"])
+        dataset["mem_free"] = int(dataset["memFree"])
+    else:
+        unknown_exit(SERVICE, f"Switch family {config['family']} NOT known")
+
+    calculcate_usage(dataset)
+    state, message = generate_output(config, dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

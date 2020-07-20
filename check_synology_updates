@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""check_synology_updates
+
+Script checks if Synology is up to date:
+Installed system version is retrieved via SNMPv3 using pysnmp library.
+Latest available system version is retrieved from RSS feed.
+"""
+
+import argparse
+import re
+from xml.etree import ElementTree
+
+import requests
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_vars_to_dataset,
+    check_snmp_args,
+    get_snmp_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "SYNOLOGY UPDATE"
+SYNOLOGY_UPDATE_FEED = "https://update.synology.com/autoupdate/genRSS.php"
+
+
+def compare_synology_version(dataset):
+    """
+    We need to compare Synology version since version string obtained via SNMP
+    might look like DSM 6.2-24922 and latest version in actually 6.2.2-24922
+    but they are the same version.
+    """
+    version_regex = "^([A-Z]+) ([.0-9]+)[-]([-0-9]+)$"
+    latest_match = re.search(version_regex, dataset["latest_version"])
+    if latest_match:
+        latest_system = latest_match.group(1)
+        latest_version = latest_match.group(2)
+        latest_build = latest_match.group(3)
+    else:
+        unknown_exit(SERVICE, "Unable compare Synology system versions")
+
+    installed_match = re.search(version_regex, dataset["version"])
+    if installed_match:
+        installed_system = installed_match.group(1)
+        installed_version = installed_match.group(2)
+        installed_build = installed_match.group(3)
+    else:
+        unknown_exit(SERVICE, "Unable compare Synology system versions")
+
+    if latest_system != installed_system:
+        return True
+
+    if latest_build != installed_build:
+        return True
+
+    if not latest_version.startswith(installed_version):
+        return True
+
+    return False
+
+
+def generate_output(dataset):
+    """Prepare message string and exit code"""
+
+    if compare_synology_version(dataset):
+        state = "WARNING"
+        message = (
+            f"{SERVICE} {state} - system version {dataset['version']} "
+            f"differs from the latest available {dataset['latest_version']}"
+        )
+    elif dataset["upgradeAvailable"] == "1":
+        state = "WARNING"
+        message = (
+            f"{SERVICE} {state} - "
+            f"System version {dataset['latest_version']} seems current"
+            "but Synology thinks there is an update available"
+        )
+    else:
+        state = "OK"
+        message = (
+            f"{SERVICE} {state} - "
+            f"System version {dataset['latest_version']} is current"
+        )
+
+    message += f" (system update state: {dataset['upgrade_state']})."
+    return state, message
+
+
+def parse_update_state(dataset):
+    """Parse Synology upgradeAvailable SNMP value"""
+    if dataset["upgradeAvailable"] == "1":
+        dataset["upgrade_state"] = "Available"
+    elif dataset["upgradeAvailable"] == "2":
+        dataset["upgrade_state"] = "Unavailable"
+    elif dataset["upgradeAvailable"] == "3":
+        dataset["upgrade_state"] = "Connecting"
+    elif dataset["upgradeAvailable"] == "4":
+        dataset["upgrade_state"] = "Disconnected"
+    elif dataset["upgradeAvailable"] == "5":
+        dataset["upgrade_state"] = "Others"
+    else:
+        dataset["upgrade_state"] = "Unknown"
+
+
+def fetch_update_feed():
+    """Download RSS feed and parse it"""
+    try:
+        response = requests.get(SYNOLOGY_UPDATE_FEED)
+    except (requests.exceptions.RequestException, ValueError) as err:
+        unknown_exit(SERVICE, err)
+    try:
+        tree = ElementTree.fromstring(response.content)
+    except ElementTree.ParseError as err:
+        unknown_exit(SERVICE, err)
+    return tree
+
+
+def get_latest_version(dataset):
+    """Find latest system version in the feed"""
+
+    tree = fetch_update_feed()
+    items = tree.findall("./channel/item")
+
+    for item in items:
+        latest_version = item.find("title").text
+        models = item.findall("model")
+        for model in models:
+            model_name = model.find("mUnique").text
+            if model_name.endswith(dataset["sanitazed_model"]):
+                dataset["latest_version"] = latest_version
+                return
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = {}
+
+    syno_model = ObjectType(ObjectIdentity("SYNOLOGY-SYSTEM-MIB", "modelName", 0))
+    syno_version = ObjectType(ObjectIdentity("SYNOLOGY-SYSTEM-MIB", "version", 0))
+    syno_upgrade = ObjectType(
+        ObjectIdentity("SYNOLOGY-SYSTEM-MIB", "upgradeAvailable", 0)
+    )
+
+    try:
+        raw_data = get_snmp_data(config, syno_model, syno_version, syno_upgrade,)
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_vars_to_dataset(dataset, raw_data)
+
+    model_match = re.search("([0-9]+[+A-Za-z]*$)", dataset["modelName"])
+    if model_match:
+        dataset["sanitazed_model"] = model_match.group(1)
+
+    parse_update_state(dataset)
+    try:
+        get_latest_version(dataset)
+    except AttributeError:
+        unknown_exit(SERVICE, "Parsing RSS update feed failed")
+
+    state, message = generate_output(dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

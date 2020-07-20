@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""check_synology_system
+
+Script check various Synology system statuses:
+  - Temperature
+  - System partition status
+  - Power Supply status
+  - CPU fan status
+  - System fan status
+Information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_vars_to_dataset,
+    check_snmp_args,
+    get_snmp_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "SYNOLOGY SYSTEM"
+
+
+def add_performace_data(config, dataset):
+    """Add perfdata to message string"""
+    message = ""
+    message += " |"
+    message += (
+        f" 'temperature'"
+        f"={dataset['temperature']};{config['warning']};{config['critical']};;"
+    )
+    message += f" 'system status'" f"={dataset['systemStatus']};;;;"
+    message += f" 'power status'" f"={dataset['powerStatus']};;;;"
+    message += f" 'system fan status'" f"={dataset['systemFanStatus']};;;;"
+    message += f" 'CPU fan status'" f"={dataset['cpuFanStatus']};;;;"
+    return message
+
+
+def generate_output(config, dataset):
+    """Prepare message string and exit code"""
+    state = "OK"
+    message = ""
+
+    if int(dataset["temperature"]) > config["critical"]:
+        state = "CRITICAL"
+        message += " Temperature over limit."
+    elif int(dataset["temperature"]) > config["warning"]:
+        state = "WARNING"
+        message += " Temperature over limit."
+
+    if dataset["systemStatus"] != "1":
+        state = "CRITICAL"
+        message += " System partition failure."
+
+    if dataset["powerStatus"] != "1":
+        state = "CRITICAL"
+        message += " Power supply failure."
+
+    if dataset["systemFanStatus"] != "1":
+        state = "CRITICAL"
+        message += " System fan failure."
+
+    if dataset["cpuFanStatus"] != "1":
+        state = "CRITICAL"
+        message += " CPU fan failure."
+
+    if state == "OK":
+        message += " All systems nominal"
+
+    message = f"{SERVICE} {state} -" + message + add_performace_data(config, dataset)
+    return state, message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+    parser.add_argument(
+        "-w",
+        "--warning",
+        type=int,
+        default=70,
+        help="Warning temperature threshold (Celsius)",
+    )
+    parser.add_argument(
+        "-c",
+        "--critical",
+        type=int,
+        default=90,
+        help="Critical temperature threshold (Celsius)",
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = {}
+
+    system_status = ObjectType(ObjectIdentity("SYNOLOGY-SYSTEM-MIB", "systemStatus", 0))
+    power_status = ObjectType(ObjectIdentity("SYNOLOGY-SYSTEM-MIB", "powerStatus", 0))
+    temperature = ObjectType(ObjectIdentity("SYNOLOGY-SYSTEM-MIB", "temperature", 0))
+    system_fan = ObjectType(ObjectIdentity("SYNOLOGY-SYSTEM-MIB", "systemFanStatus", 0))
+    cpu_fan = ObjectType(ObjectIdentity("SYNOLOGY-SYSTEM-MIB", "cpuFanStatus", 0))
+
+    try:
+        raw_data = get_snmp_data(
+            config, system_status, power_status, temperature, system_fan, cpu_fan
+        )
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_vars_to_dataset(dataset, raw_data)
+
+    state, message = generate_output(config, dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

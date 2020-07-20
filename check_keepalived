@@ -1,0 +1,98 @@
+#!/bin/bash
+# Author: Michal Moravec @Logicworks
+#
+# Usage: check_keepalived (INSTANCE|GROUP) vrrp_instance_name (MASTER|BACKUP)
+#        Third parameter denotes desired keepalived state.
+set -o nounset
+set -o errexit
+
+readonly SCRIPTNAME="${0##*/}"
+readonly USAGE="USAGE
+    $SCRIPTNAME type name state
+    $SCRIPTNAME -h
+
+        type    VRRP type (INSTANCE or GROUP)
+        name    VRRP instance name
+        state   Desired state of the keepalived instance (MASTER or BACKUP)
+
+        -h      Display this message"
+
+# Usage ------------------------------------------
+while getopts ':h' OPT; do
+    case "$OPT" in
+        h)
+            echo "$USAGE"
+            exit 0
+            ;;
+
+        \?)
+            echo "UNKNOWN: Illegal option '-$OPTARG'" >&2
+            exit 3
+            ;;
+    esac
+done
+shift $(( OPTIND-1 ))
+
+if [ $# -ne 3 ]; then
+    echo "UNKNOWN: wrong number of parameters" >&2
+    exit 3
+fi
+
+readonly type="${1^^}"
+readonly name="${2}"
+readonly desired_state="${3^^}"
+readonly state_file="/var/run/keepalived.${type}.${name}.state"
+
+# Checks -----------------------------------------
+# Check desired state input
+if ! [ "${desired_state}" == 'MASTER' -o "${desired_state}"  == 'BACKUP' ]; then
+    echo "UNKNOWN: Invalid parameter '${desired_state}' for desired state"
+    exit 3
+fi
+
+if ! [ "${type}" == 'INSTANCE' -o "${type}"  == 'GROUP' ]; then
+    echo "UNKNOWN: Invalid parameter '${type}' for VRRP type"
+    exit 3
+fi
+
+# Check if keepalived.service is running
+if ! systemctl -q is-active keepalived.service; then
+    echo "CRITICAL: keepalived.service is not active"
+    exit 2
+fi
+
+# Check if state file exists
+if [ ! -e "${state_file}" ]; then
+    echo "UNKNOWN: State file '${state_file}' does not exist."
+    exit 3
+fi
+
+# Compare states ---------------------------------
+# parse first line of state file
+state=$(sed -En '1s|^.* is in (\S*) state$|\1|p' < "${state_file}")
+
+case "$state" in
+    "MASTER")
+        if [ ! "$desired_state" == 'MASTER' ]; then
+            echo "WARNING: Failover occured. This host is in MASTER state."
+            exit 1
+        fi
+        ;;
+    "BACKUP")
+        if [ ! "$desired_state" == 'BACKUP' ]; then
+            echo "CRITICAL: Failover is not in MASTER state."
+            exit 2
+        fi
+        ;;
+    "FAULT")
+        echo "CRITICAL: Failover is in FAULT state."
+        exit 2
+        ;;
+    *)
+        echo "UNKNOWN: Unable to parse state from '${state_file}'"
+        exit 3
+        ;;
+esac
+
+echo "OK: state '${state}' is desired."
+exit 0

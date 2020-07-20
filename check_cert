@@ -1,0 +1,268 @@
+#!/bin/bash
+## check_certificate.sh
+#
+# Check certificate expiration dates
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+SCRIPTNAME="${0##*/}"
+
+RET_OK="0"
+RET_WARN="1"
+RET_ERR="2"
+RET_UNK="3"
+
+DEFAULT_DAYS='28'
+DEFAULT_PORT='443'
+
+VERBOSE='false'
+
+USAGE="USAGE
+    $SCRIPTNAME -h
+    $SCRIPTNAME [-vN] [-d days] [-p port] [-s starttls_method] hostname
+
+DESCRIPTION
+    Nagios-compatible script to check TLS certificate expiration
+
+OPTIONS
+    -d  Return warning (exit $RET_WARN) if certificate will expire in less than
+        given number of days (defaults to $DEFAULT_DAYS)
+    -p  Connect to given port (defaults to $DEFAULT_PORT)
+    -s  Use given STARTTLS method
+        see s_client(1ssl) for list of available methods
+    -N  Do not use Server Name Identification
+    -v  Print verbose output on stdout
+
+EXIT CODES
+    $RET_OK	Certificate is valid
+    $RET_WARN	Certificate will expire soon (in less then given number of days)
+    $RET_ERR	Certificate is expired (or not valid yet)
+    $RET_UNK	Unknown error (see stderr)
+
+EXAMPLES
+    Check https certificate:
+        $SCRIPTNAME web.example.com
+
+    Check smtp certificate:
+        $SCRIPTNAME -N -s smtp -p 25 mail.example.com
+"
+
+# Extra arguments as global variable
+declare -a OPENSSL_EXTRA_ARGS
+
+
+# --------------------------------------------------------------------
+err_message() {
+    printf '%s: %s: %s\n' "$SCRIPTNAME" "$1" "$2" >&2
+}
+
+warning() {
+    err_message 'warning' "$*"
+}
+
+error() {
+    err_message 'error' "$*"
+}
+
+verbose() {
+    if [[ "$VERBOSE" == 'true' ]]; then
+        echo "$*"
+    fi
+}
+
+check_number() {
+    [[ "$1" =~ ^[0-9]+$ ]]
+}
+
+check_days() {
+    local days="$1"
+    check_number "$days" || {
+        error "Days ('$days') must be a positive number"
+        return "$RET_UNK"
+    }
+}
+
+check_port() {
+    local port="$1"
+
+    check_number "$port" || {
+        error "Port ('$port') must be a positive number"
+        return "$RET_UNK"
+    }
+
+    [[ 1 -le "$port" && "$port" -le 65535 ]] || {
+        error "Port ('$port') must be in range 1-65535"
+        return "$RET_UNK"
+    }
+}
+
+check_starttls_method() {
+    local starttls_method="$1"
+
+    [[ "$starttls_method" =~ ^(smtp|pop3|imap|ftp|postgres|mysql|lmtp|nntp|sieve|ldap)$ ]] || {
+        error "Unknown STARTTLS method '$starttls_method'"
+        return "$RET_UNK"
+    }
+}
+
+# s_client wrapper
+s_client() {
+    local host="$1"
+    local port="$2"
+    openssl s_client \
+                -connect "$host:$port" \
+                "${OPENSSL_EXTRA_ARGS[@]}" \
+                -showcerts \
+                < /dev/null 2> /dev/null
+}
+
+
+get_certificate() {
+    local host="$1"
+    local port="$2"
+    s_client "$host" "$port" \
+            | openssl x509  2> /dev/null || {
+        error "OpenSSL failed to connect to the host '$host'"
+        return "$RET_UNK"
+    }
+}
+
+
+verify_certificate() {
+    local host="$1"
+    local port="$2"
+
+    # run s_client with verify parameters
+    OPENSSL_EXTRA_ARGS+=("-verify" "10" "-verify_return_error")
+    s_client "$host" "$port" > /dev/null || {
+        error "Certificate for host '$host' is not valid"
+        verbose "OpenSSL s_client has failed to verify '$host'; Maybe due to wrong certificate chain"
+        return "$RET_ERR"
+    }
+
+    # verify hostname as well
+    OPENSSL_EXTRA_ARGS+=("-verify_hostname" "$host")
+    s_client "$host" "$port" > /dev/null || {
+        error "Certificate is not issued for host '$host'"
+        verbose "OpenSSL s_client has failed to verify '$host'; Requested hostname is not among certificate names"
+        return "$RET_ERR"
+    }
+}
+
+
+get_dates() {
+    LC_ALL=C openssl x509 -noout -dates <<< "$1" || {
+        error "Failed to get certificate dates"
+        return "$RET_UNK"
+    }
+}
+
+to_timestamp() {
+    date -d "$1" '+%s'
+}
+
+to_date() {
+    date -d "@$1" '+%d.%m.%Y'
+}
+
+check_certificate_dates() {
+    local certificate="$1"
+    local days_treshold="$2"
+    local dates=$(get_dates "$certificate")
+    local notAfter notBefore now days_left
+
+    notAfter=$(to_timestamp "$(sed -n 's|^notAfter=||p' <<< "$dates")")
+    notBefore=$(to_timestamp "$(sed -n 's|^notBefore=||p' <<< "$dates")")
+    now=$(to_timestamp "now")
+
+    [[ "$notBefore" -le "$now" ]] || {
+        error "Certificate is not valid yet"
+        verbose "Certificate will be valid from $(to_date "$notBefore")"
+        return "$RET_ERR"
+    }
+    [[ "$now" -le "$notAfter" ]] || {
+        error "Certificate has expired"
+        verbose "Certificate has expired on $(to_date "$notAfter")"
+        return "$RET_ERR"
+    }
+
+    days_left=$(( (notAfter - now)/(60*60*24) ))
+    [[ "$days_left" -ge "$days_treshold" ]] || {
+        warning "Certificate will expire in $days_left days"
+        verbose "Certificate will expire on $(to_date "$notAfter") (in $days_left days)"
+        return "$RET_WARN"
+    }
+
+    verbose "Certificate is valid from $(to_date "$notBefore") to $(to_date "$notAfter")"
+}
+
+# --------------------------------------------------------------------
+main() {
+    local OPT OPTARG
+    local days="$DEFAULT_DAYS"
+    local host
+    local port="$DEFAULT_PORT"
+    local servername='true'
+    local starttls_method=''
+
+    while getopts ':hd:p:s:Nv' OPT; do
+        case "$OPT" in
+            h)
+                echo "$USAGE"
+                return "$RET_OK"
+                ;;
+
+            d)
+                days="$OPTARG"
+                check_days "$days"
+                ;;
+
+            p)
+                port="$OPTARG"
+                check_port "$port"
+                ;;
+
+            s)
+                starttls_method="$OPTARG"
+                check_starttls_method "$starttls_method"
+                ;;
+
+            N)
+                servername='false'
+                ;;
+
+            v)
+                VERBOSE='true'
+                ;;
+
+            \?)
+                error "Illegal option '-$OPTARG'"
+                return "$RET_UNK"
+                ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    [[ $# -eq 1 ]] || {
+        error "Need exactly one 'host' parameter; See usage (-h)"
+        return "$RET_UNK"
+    }
+    host="$1"
+
+    [[ -n "$starttls_method" ]] && {
+        OPENSSL_EXTRA_ARGS+=("-starttls" "$starttls_method")
+    }
+    [[ "$servername" == 'true' ]] && {
+        OPENSSL_EXTRA_ARGS+=("-servername" "$host")
+    }
+
+    certificate=$(get_certificate "$host" "$port")
+    # this will end the script on certificate failure
+    check_certificate_dates "$certificate" "$days"
+    # this will verify the chain, hostname and so on
+    verify_certificate "$host" "$port"
+}
+
+main "$@"

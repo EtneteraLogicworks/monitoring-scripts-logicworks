@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""check_unifi_clients
+
+Script checks number of Wi-Fi clients connected to single UniFi Access Point.
+Information is retrieved via SNMPv3 using pysnmp library.
+Script output follows standard nagios format with proper exit codes and pefdata string.
+In addition to total number of clients perfdata contains separate counter for each
+SSID/(2.4GHz|5GHz) combination. --warning and --critical thresholds apply only to total
+number of clients connected.
+"""
+
+import argparse
+import re
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_table_to_dataset,
+    check_snmp_args,
+    get_snmp_table_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "WIFI CLIENTS"
+INTEFACE_FILTER = "(ath)[0-9]+"
+
+
+def process_data(dataset, config):
+    """Parse retrived data"""
+    interfaces = [
+        i for i in dataset if re.match(config["interface_filter"], i["unifiVapName"])
+    ]
+    total_clients = sum(int(i["unifiVapNumStations"]) for i in interfaces)
+    return (interfaces, total_clients)
+
+
+def add_performace_data(message, interfaces, total_clients, config):
+    """Add perfdata to message string"""
+    message += " |"
+    for interface in interfaces:
+        if int(interface["unifiVapChannel"]) <= 13:
+            radio = "2.4"
+        else:
+            radio = "5"
+        message += (
+            f' \'{interface["unifiVapName"]} '
+            f'({interface["unifiVapEssId"]}:{radio})\''
+            f'={interface["unifiVapNumStations"]};;;0;'
+        )
+
+    message += (
+        f" 'total clients'={total_clients} "
+        f';{config["warning"]};{config["critical"]};0;'
+    )
+    return message
+
+
+def generate_output(interfaces, total_clients, config):
+    """Prepare message string and exit code"""
+    if total_clients > config["critical"] and config["critical"] > 0:
+        state = "CRITICAL"
+    elif total_clients > config["warning"] and config["warning"] > 0:
+        state = "WARNING"
+    else:
+        state = "OK"
+    message = f"{SERVICE} {state} - {total_clients} currently connected"
+    message = add_performace_data(message, interfaces, total_clients, config)
+    return state, message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    add_common_snmp_args(parser)
+
+    parser.add_argument(
+        "-i",
+        "--interface-filter",
+        default=INTEFACE_FILTER,
+        help="Regex for filtering out desired network interfaces",
+    )
+    parser.add_argument(
+        "-w",
+        "--warning",
+        type=int,
+        default=0,
+        help="Warning level of connected clients",
+    )
+    parser.add_argument(
+        "-c",
+        "--critical",
+        type=int,
+        default=0,
+        help="Critical level of connected clients",
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = []
+
+    unifi_vap_name = ObjectType(ObjectIdentity("UBNT-UniFi-MIB", "unifiVapName"))
+    unifi_vap_stations = ObjectType(
+        ObjectIdentity("UBNT-UniFi-MIB", "unifiVapNumStations")
+    )
+    unifi_vap_ssid = ObjectType(ObjectIdentity("UBNT-UniFi-MIB", "unifiVapEssId"))
+    unifi_vap_channel = ObjectType(ObjectIdentity("UBNT-UniFi-MIB", "unifiVapChannel"))
+
+    try:
+        raw_data = get_snmp_table_data(
+            config,
+            unifi_vap_name,
+            unifi_vap_stations,
+            unifi_vap_ssid,
+            unifi_vap_channel,
+        )
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+
+    add_table_to_dataset(dataset, raw_data, "unifi")
+
+    interfaces, total_clients = process_data(dataset, config)
+    state, message = generate_output(interfaces, total_clients, config)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""check_switch_cpu
+
+Script checks switch cpu usage.
+Information is retrieved via SNMPv3 using pysnmp library.
+Currently tested with HP 1920S (HP family) and HP 1920 (3COM family)
+"""
+
+import argparse
+import re
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_vars_to_dataset,
+    check_snmp_args,
+    get_snmp_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "SWITCH CPU usage"
+
+
+def check_thresholds(config):
+    """Check input thresholds arguments"""
+    ranger = range(0, 100)
+    if config["warning"] not in ranger or config["critical"] not in ranger:
+        unknown_exit(SERVICE, "Bad args: Bogus warn/crit thresholds")
+
+
+def add_performace_data(config, dataset):
+    """Add perfdata to message string"""
+    message = (
+        f" | 'usage'={dataset['cpu_usage']}%"
+        f";{config['warning']};{config['critical']};0;100"
+    )
+    return message
+
+
+def generate_output(config, dataset):
+    """Prepare message string and exit code"""
+    state = "OK"
+
+    if dataset["cpu_usage"] >= config["critical"]:
+        state = "CRITICAL"
+    elif dataset["cpu_usage"] >= config["warning"]:
+        state = "WARNING"
+
+    message = f"{SERVICE} {state} - {dataset['cpu_usage']} % "
+    message = message + add_performace_data(config, dataset)
+    return state, message
+
+
+def get_hp_cpu_usage(cpu_load):
+    """Parse HP CPU usage from load string"""
+    cpu_usage_match = re.search("5 Secs \\([ ]*([0-9.]*?)%", cpu_load)
+    if not cpu_usage_match:
+        unknown_exit(SERVICE, f"Unable to parse HP switch load {cpu_load}")
+    return int(float(cpu_usage_match.group(1)))
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+    parser.add_argument(
+        "-w",
+        "--warning",
+        type=int,
+        default=70,
+        help="Warning memory usage percentage (0-100)",
+    )
+    parser.add_argument(
+        "-c",
+        "--critical",
+        type=int,
+        default=90,
+        help="Critical memory usage percentage (0-100)",
+    )
+    parser.add_argument(
+        "-f",
+        "--family",
+        required=True,
+        help="Switch family. Supported families: 1910, 1920, 1920S",
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+    check_thresholds(config)
+
+    dataset = {}
+
+    if config["family"] == "1920S":
+        cpu = ObjectType(
+            ObjectIdentity(
+                "HP-SWITCHING-MIB", "agentSwitchCpuProcessTotalUtilization", 0
+            )
+        )
+    elif config["family"] in ["1910", "1920"]:
+        cpu = ObjectType(
+            ObjectIdentity("HH3C-ENTITY-EXT-MIB", "hh3cEntityExtCpuUsage", 8)
+        )
+    else:
+        unknown_exit(SERVICE, f"Switch family {config['family']} NOT known")
+
+    try:
+        raw_data = get_snmp_data(config, cpu)
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_vars_to_dataset(dataset, raw_data)
+
+    if config["family"] == "1920S":
+        dataset["cpu_usage"] = get_hp_cpu_usage(
+            dataset["agentSwitchCpuProcessTotalUtilization"]
+        )
+    elif config["family"] in ["1910", "1920"]:
+        dataset["cpu_usage"] = int(dataset["hh3cEntityExtCpuUsage"])
+    else:
+        unknown_exit(SERVICE, f"Switch family {config['family']} NOT known")
+
+    state, message = generate_output(config, dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()

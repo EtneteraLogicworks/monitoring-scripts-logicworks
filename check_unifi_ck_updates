@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+"""check_unifi_updates
+
+Script checks if UniFi CloudKey device firmware is up to date.
+Installed firmware version is retrieved from info.php via HTTP.
+Latest available firmware version is retrieved via ubnt.com API (See UNIFI_RELEASES_URL)
+"""
+
+import argparse
+import re
+
+import requests
+
+from logicworks_monitoring_lib import report, unknown_exit
+
+SERVICE = "UNIFI UPDATE"
+UNIFI_RELEASES_URL = "https://fw-update.ubnt.com/api/firmware-latest"
+UNIFI_IDENTIFIERS = {
+    "UC-CK": "UCK",
+    "UCK-G2": "UCKG2",
+    "UCK-G2-PLUS": "UCKP",
+}
+
+
+def normalize_version(raw_version):
+    """Strip unwanted characters from the retrieved version"""
+    version_string = re.sub("^v", "", raw_version)
+    version_string = version_string.replace("+", ".")
+    return version_string
+
+
+def parse_cloudkey_info(raw_cloudkey_info):
+    """Parse data from Cloud Key"""
+    cloudkey_info = {"systems": []}
+    for system in raw_cloudkey_info["data"][0]["systems"]:
+        if system["installed"] and system["id"] in ["unifi"]:
+            cloudkey_info["systems"].append({})
+            cloudkey_info["systems"][-1]["id"] = system["id"]
+            cloudkey_info["systems"][-1]["version_installed"] = system["version"]
+    raw_version = raw_cloudkey_info["data"][0]["version"]
+    cloudkey_info["model"] = re.search("^(.+?)[.]", raw_version).group(1)
+    cloudkey_info["version_installed"] = re.search(
+        "v([0-9.]+[^.]+)", raw_version
+    ).group(1)
+    return cloudkey_info
+
+
+def fetch_cloudkey_info(config):
+    """Download version info from Cloud Key info.php"""
+    cloudkey_info_url = f"http://{config['host']}/info.php"
+    try:
+        web_req = requests.get(cloudkey_info_url)
+        raw_cloudkey_info = web_req.json()
+    except (requests.exceptions.RequestException, ValueError) as err:
+        unknown_exit(SERVICE, err)
+    cloudkey_info = parse_cloudkey_info(raw_cloudkey_info)
+    return cloudkey_info
+
+
+def fetch_latest_versions():
+    """Obtain latest available firmware versions from the UBNT API"""
+    try:
+        api_req = requests.get(UNIFI_RELEASES_URL)
+        list_of_devices = api_req.json()["_embedded"]["firmware"]
+    except (requests.exceptions.RequestException, ValueError) as err:
+        unknown_exit(SERVICE, err)
+    return list_of_devices
+
+
+def get_device_item(list_of_devices, platform, product="unifi-firmware"):
+    """Get specific device from list of Unifi devices"""
+    device_item = next(
+        (
+            device
+            for device in list_of_devices
+            if device["channel"] == "release"
+            and device["platform"] == platform
+            and device["product"] == product
+        ),
+        None,
+    )
+    if device_item is None:
+        unknown_exit(
+            SERVICE, f"Unable to find updates for platform {platform} product {product}"
+        )
+    return device_item
+
+
+def get_all_latest_versions(cloudkey_info):
+    """Obtain all latest software version and prepare data structure"""
+    list_of_devices = fetch_latest_versions()
+    cloud_key = get_device_item(list_of_devices, cloudkey_info["model"])
+    cloudkey_info["latest_version"] = normalize_version(cloud_key["version"])
+    for system in cloudkey_info["systems"]:
+        if system["id"] == "unifi":
+            system_info = get_device_item(
+                list_of_devices, platform="debian", product="unifi-controller"
+            )
+            system["latest_version"] = (
+                re.search("atag-(.*)", system_info["version"]).group(1) + "-1"
+            )
+
+
+def compare_versions(product, installed, latest, output_data):
+    """Compare product current version with the latest and report"""
+    if installed != latest:
+        output_data["state"] = "WARNING"
+        output_data["message_warning"] += (
+            f" {product} version {installed} "
+            f"differs from the latest available {latest}."
+        )
+    else:
+        output_data["message_ok"] += f" {product} {installed} is current"
+
+
+def generate_output(cloudkey_info):
+    """Prepare message string and exit code"""
+    output_data = {
+        "state": "OK",
+        "message_warning": "",
+        "message_ok": "",
+    }
+    compare_versions(
+        "Cloud Key firmware",
+        cloudkey_info["version_installed"],
+        cloudkey_info["latest_version"],
+        output_data,
+    )
+
+    for system in cloudkey_info["systems"]:
+        if system["id"] == "unifi":
+            system_name = "UniFi controller"
+        compare_versions(
+            system_name,
+            system["version_installed"],
+            system["latest_version"],
+            output_data,
+        )
+
+    message = (
+        SERVICE
+        + f" {output_data['state']} -"
+        + output_data["message_warning"]
+        + output_data["message_ok"]
+    )
+    return output_data["state"], message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    parser.add_argument(
+        "-H", "--host", required=True, help="Name or IPv4 address of host to check"
+    )
+    config = vars(parser.parse_args())
+    cloudkey_info = fetch_cloudkey_info(config)
+    get_all_latest_versions(cloudkey_info)
+    state, message = generate_output(cloudkey_info)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()
