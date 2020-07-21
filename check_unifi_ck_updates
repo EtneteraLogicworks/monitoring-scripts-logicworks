@@ -20,6 +20,7 @@ UNIFI_IDENTIFIERS = {
     "UCK-G2": "UCKG2",
     "UCK-G2-PLUS": "UCKP",
 }
+VERIFY_CK_CERT=False
 
 
 def normalize_version(raw_version):
@@ -49,7 +50,7 @@ def fetch_cloudkey_info(config):
     """Download version info from Cloud Key info.php"""
     cloudkey_info_url = f"http://{config['host']}/info.php"
     try:
-        web_req = requests.get(cloudkey_info_url)
+        web_req = requests.get(cloudkey_info_url, verify=VERIFY_CK_CERT)
         raw_cloudkey_info = web_req.json()
     except (requests.exceptions.RequestException, ValueError) as err:
         unknown_exit(SERVICE, err)
