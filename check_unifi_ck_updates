@@ -11,7 +11,12 @@ import re
 
 import requests
 
+from urllib3.exceptions import InsecureRequestWarning
 from logicworks_monitoring_lib import report, unknown_exit
+
+# We don't want any warnings in Icinga plugin output.
+requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
+
 
 SERVICE = "UNIFI UPDATE"
 UNIFI_RELEASES_URL = "https://fw-update.ubnt.com/api/firmware-latest"
@@ -20,7 +25,7 @@ UNIFI_IDENTIFIERS = {
     "UCK-G2": "UCKG2",
     "UCK-G2-PLUS": "UCKP",
 }
-VERIFY_CK_CERT=False
+VERIFY_CK_CERT = False
 
 
 def normalize_version(raw_version):
