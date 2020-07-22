@@ -30,9 +30,9 @@ def parse_threshold(threshold):
     threshold_dict = {}
     threshold_match = re.search("^([0-9.]+),([0-9.]+),([0-9.]+)$", threshold)
     if threshold_match:
-        threshold_dict[f"load1"] = float(threshold_match.group(1))
-        threshold_dict[f"load5"] = float(threshold_match.group(2))
-        threshold_dict[f"load15"] = float(threshold_match.group(2))
+        threshold_dict["load1"] = float(threshold_match.group(1))
+        threshold_dict["load5"] = float(threshold_match.group(2))
+        threshold_dict["load15"] = float(threshold_match.group(2))
     else:
         unknown_exit(SERVICE, f"Unable to parse threshold {threshold}")
     return threshold_dict
@@ -111,7 +111,9 @@ def main():
         "-c", "--critical", default="0.9,0.8,0.7", help="Critical load thresholds",
     )
     parser.add_argument(
-        "-f", "--family", help="Switch family. Supported families: 1920S, EdgeSwitchXP",
+        "-f",
+        "--family",
+        help="Switch family. Supported families: 1920S, EdgeSwitchXP, UniFiSwitch",
     )
 
     config = vars(parser.parse_args())
@@ -125,6 +127,12 @@ def main():
         cpu = ObjectType(
             ObjectIdentity(
                 "HP-SWITCHING-MIB", "agentSwitchCpuProcessTotalUtilization", 0
+            )
+        )
+    elif config["family"] == "UniFiSwitch":
+        cpu = ObjectType(
+            ObjectIdentity(
+                "EdgeSwitch-SWITCHING-MIB", "agentSwitchCpuProcessTotalUtilization", 0
             )
         )
     elif config["family"] == "EdgeSwitchXP":
@@ -142,7 +150,7 @@ def main():
     except ValueError as err:
         unknown_exit(SERVICE, err)
 
-    if config["family"] == "1920S":
+    if config["family"] in ["1920S", "UniFiSwitch"]:
         dataset["load"] = parse_hp_load(
             dataset["agentSwitchCpuProcessTotalUtilization"]
         )

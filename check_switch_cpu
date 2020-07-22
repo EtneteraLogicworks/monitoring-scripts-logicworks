@@ -85,7 +85,7 @@ def main():
         "-f",
         "--family",
         required=True,
-        help="Switch family. Supported families: 1910, 1920, 1920S",
+        help="Switch family. Supported families: 1910, 1920, 1920S, UniFiSwitch",
     )
 
     config = vars(parser.parse_args())
@@ -98,6 +98,12 @@ def main():
         cpu = ObjectType(
             ObjectIdentity(
                 "HP-SWITCHING-MIB", "agentSwitchCpuProcessTotalUtilization", 0
+            )
+        )
+    elif config["family"] == "UniFiSwitch":
+        cpu = ObjectType(
+            ObjectIdentity(
+                "EdgeSwitch-SWITCHING-MIB", "agentSwitchCpuProcessTotalUtilization", 0
             )
         )
     elif config["family"] in ["1910", "1920"]:
@@ -113,7 +119,7 @@ def main():
         unknown_exit(SERVICE, err)
     add_vars_to_dataset(dataset, raw_data)
 
-    if config["family"] == "1920S":
+    if config["family"] in ["1920S", "UniFiSwitch"]:
         dataset["cpu_usage"] = get_hp_cpu_usage(
             dataset["agentSwitchCpuProcessTotalUtilization"]
         )
