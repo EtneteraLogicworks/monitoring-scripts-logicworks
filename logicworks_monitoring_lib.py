@@ -130,9 +130,9 @@ def prepare_authdata(config, snmpversion="2c"):
     # SNMP v1 and v2c
     if config["community"]:
         if snmpversion == "2c":
-           model = 1
+            model = 1
         elif snmpversion == "1":
-           model = 0
+            model = 0
         authdata = CommunityData(config["community"], mpModel=model)
     # SNMP v3
     else:
@@ -188,6 +188,19 @@ def get_snmp_table_data(config, *args, snmp_engine=SnmpEngine(), snmpversion="2c
         else:
             snmp_data.append(var_binds)
     return snmp_data
+
+
+def get_snmp_oids(config, service, *args):
+    """Fetch SNMP oid values"""
+    dataset = {}
+
+    try:
+        raw_data = get_snmp_data(config, *args)
+    except ValueError as err:
+        unknown_exit(service, err)
+    add_vars_to_dataset(dataset, raw_data)
+
+    return dataset
 
 
 def unknown_exit(service, message):
