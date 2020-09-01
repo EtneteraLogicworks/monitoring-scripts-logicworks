@@ -182,7 +182,7 @@ def get_system_information(config, dataset):
             else:
                 dataset[
                     "installed_version"
-                ] = f"{dataset['type']}-{dataset['model_number']}{dataset['version']}.R{dataset['release']}"
+                ] = f"{dataset['type']}-{dataset['model_number']}_{dataset['version']}.R{dataset['release']}"
         else:
             unknown_exit(SERVICE, "Unable to get installed firmware version")
 
