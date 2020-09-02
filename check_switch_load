@@ -83,18 +83,23 @@ def generate_output(dataset):
     return state, message
 
 
-def parse_hp_load(cpu_load):
+def parse_load(cpu_load):
     """Parse HP CPU load string"""
     load_dict = {}
-    load_match = re.search(
-        "60 Secs \\([ ]*([0-9.]*?)%.*300 Secs \\([ ]*([0-9.]*?)%", cpu_load
-    )
-    if load_match:
-        load_dict["load1"] = round(float(load_match.group(1)) / 100, 2)
-        load_dict["load5"] = round(float(load_match.group(2)) / 100, 2)
-        load_dict["load15"] = 0
+    load1_match = re.search("60 Secs \\([ ]*([0-9.]*?)%", cpu_load)
+
+    if load1_match:
+        load_dict["load1"] = round(float(load1_match.group(1)) / 100, 2)
     else:
-        unknown_exit(SERVICE, f"Unable to parse HP switch load {cpu_load}")
+        unknown_exit(SERVICE, f"Unable to parse switch load {cpu_load}")
+
+    load5_match = re.search("300 Secs \\([ ]*([0-9.]*?)%", cpu_load)
+    if load5_match:
+        load_dict["load5"] = round(float(load5_match.group(1)) / 100, 2)
+    else:
+        load_dict["load5"] = 0
+    load_dict["load15"] = 0
+
     return load_dict
 
 
@@ -151,9 +156,7 @@ def main():
         unknown_exit(SERVICE, err)
 
     if config["family"] in ["1920S", "UniFiSwitch"]:
-        dataset["load"] = parse_hp_load(
-            dataset["agentSwitchCpuProcessTotalUtilization"]
-        )
+        dataset["load"] = parse_load(dataset["agentSwitchCpuProcessTotalUtilization"])
     elif config["family"] == "EdgeSwitchXP":
         dataset["load"] = {
             "load1": round(float("0." + dataset2[0]["loadValue"]), 2),
