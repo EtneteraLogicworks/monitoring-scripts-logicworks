@@ -1,0 +1,113 @@
+#!/usr/bin/env python3
+"""check_qnap_updates
+
+Script checks if QNAP is up to date:
+Installed system version is retrieved via SNMPv3 using pysnmp library.
+Latest available system version is retrieved from XML feed.
+"""
+
+import argparse
+import re
+from xml.etree import ElementTree
+
+import requests
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_vars_to_dataset,
+    check_snmp_args,
+    get_snmp_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "QNAP UPDATE"
+QNAP_UPDATE_FEED = "https://update.qnap.com/FirmwareRelease.xml"
+
+
+def fetch_update_feed():
+    """Download RSS feed and parse it"""
+    try:
+        response = requests.get(QNAP_UPDATE_FEED)
+    except (requests.exceptions.RequestException, ValueError) as err:
+        unknown_exit(SERVICE, err)
+    try:
+        tree = ElementTree.fromstring(response.content)
+    except ElementTree.ParseError as err:
+        unknown_exit(SERVICE, err)
+    return tree
+
+
+def get_latest_version(dataset):
+    """Find latest system version in the feed"""
+
+    tree = fetch_update_feed()
+    models = tree.findall("./storage/model")
+
+    for model in models:
+        product_name = model.find("productName").text.lower()
+        model_match = re.search(dataset["sanitazed_model"], product_name)
+        if model_match:
+            dataset["latest_version"] = model.find("firmware/version").text
+            return
+
+    raise ValueError("Latest software version not found in the feed")
+
+
+def generate_output(dataset):
+    """Prepare message string and exit code"""
+
+    if dataset["version"] != dataset["latest_version"]:
+        state = "WARNING"
+        message = (
+            f"{SERVICE} {state} - system version {dataset['version']} "
+            f"differs from the latest available {dataset['latest_version']}"
+        )
+    else:
+        state = "OK"
+        message = (
+            f"{SERVICE} {state} - "
+            f"System version {dataset['latest_version']} is current"
+        )
+
+    return state, message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = {}
+
+    qnap_model = ObjectType(ObjectIdentity("ENTITY-MIB", "entPhysicalModelName", 1))
+    qnap_version = ObjectType(ObjectIdentity("ENTITY-MIB", "entPhysicalSoftwareRev", 1))
+
+    try:
+        raw_data = get_snmp_data(config, qnap_model, qnap_version)
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_vars_to_dataset(dataset, raw_data)
+
+    dataset["sanitazed_model"] = dataset["entPhysicalModelName"].lower()
+    dataset["version"] = dataset["entPhysicalSoftwareRev"].strip()
+
+    dataset["sanitazed_model"] = "TS-469L".lower()
+    get_latest_version(dataset)
+
+    try:
+        get_latest_version(dataset)
+    except AttributeError:
+        unknown_exit(SERVICE, "Parsing XML update feed failed")
+
+    state, message = generate_output(dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()
