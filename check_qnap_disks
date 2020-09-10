@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""check_qnap_disks
+
+Script checks QNAP disks states, SMART states, and temperature.
+Information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_table_to_dataset,
+    check_snmp_args,
+    get_snmp_table_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "QNAP DISKS"
+
+
+def add_performace_data(config, dataset):
+    """Add perfdata to message string"""
+    message = ""
+    message += "|"
+    for disk in dataset:
+        message += (
+            f" 'temperature {disk['hdDescrEX']}'"
+            f"={disk['hdTemperatureEX']};{config['warning']};{config['critical']};;"
+        )
+    return message
+
+
+def generate_output(config, dataset):
+    """Prepare message string and exit code"""
+    state = "OK"
+    message = ""
+
+    for disk in dataset:
+        disk_name = disk["hdDescrEX"]
+        disk_status = disk["hdStatusEX"].lower()
+        if not disk_status.startswith(("ready", "nodisk")):
+            state = "CRITICAL"
+            message += f"Disk {disk_name} state critical: {disk_status}. "
+
+        disk_temperature = int(disk["hdTemperatureEX"])
+        if disk_temperature > config["critical"]:
+            state = "CRITICAL"
+            message += (
+                f"Disk {disk_name} tempeterature critical: {disk_temperature}°C. "
+            )
+        elif disk_temperature > config["warning"]:
+            if state != "CRITICAL":
+                state = "WARNING"
+            message += f"Disk {disk_name} tempeterature warning: {disk_temperature}°C. "
+        disk_smart = disk["hdSmartInfoEX"].lower()
+        if not disk_smart.startswith("good"):
+            state = "CRITICAL"
+            message += f"Disk {disk_name} SMART critical: {disk_smart}. "
+
+    if state == "OK":
+        message = "All disks in Normal state "
+
+    message = f"{SERVICE} {state} - " + message + add_performace_data(config, dataset)
+    return state, message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+    parser.add_argument(
+        "-w",
+        "--warning",
+        type=int,
+        default=40,
+        help="Warning disk temperature threshold (Celsius)",
+    )
+    parser.add_argument(
+        "-c",
+        "--critical",
+        type=int,
+        default=60,
+        help="Critical disk temperature threshold (Celsius)",
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = []
+
+    disk_id = ObjectType(ObjectIdentity("NAS-MIB", "hdDescrEX"))
+    disk_status = ObjectType(ObjectIdentity("NAS-MIB", "hdStatusEX"))
+    disk_temperature = ObjectType(ObjectIdentity("NAS-MIB", "hdTemperatureEX"))
+    disk_smart = ObjectType(ObjectIdentity("NAS-MIB", "hdSmartInfoEX"))
+
+    try:
+        raw_data = get_snmp_table_data(
+            config, disk_id, disk_status, disk_temperature, disk_smart
+        )
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+
+    add_table_to_dataset(dataset, raw_data)
+
+    state, message = generate_output(config, dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()
