@@ -52,10 +52,14 @@ def add_common_snmp_args(parser):
         help="Auth protocol for snmpv3",
     )
     parser.add_argument(
-        "-A", "--authpassword", help="Password for snmpv3 authentication ",
+        "-A",
+        "--authpassword",
+        help="Password for snmpv3 authentication ",
     )
     parser.add_argument(
-        "-X", "--privpassword", help="Password for snmpv3 privacy ",
+        "-X",
+        "--privpassword",
+        help="Password for snmpv3 privacy ",
     )
     parser.add_argument(
         "-x",
@@ -92,7 +96,8 @@ def add_vars_to_dataset(dataset, var_binds, item_description="", raw_output=Fals
             var, value = [x.prettyPrint() for x in var_bind]
             match_key = re.search(f"::({item_description}[^.]*)[.]", var)
             if match_key:
-                dataset[match_key.group(1)] = value
+                if value not in ["No Such Object currently exists at this OID"]:
+                    dataset[match_key.group(1)] = value
 
 
 def add_table_to_dataset(dataset, raw_data, item_description=""):
@@ -177,7 +182,12 @@ def get_snmp_table_data(config, *args, snmp_engine=SnmpEngine(), snmpversion="2c
 
     snmp_data = []
     for (error_indication, error_status, error_index, var_binds) in nextCmd(
-        snmp_engine, authdata, target, ContextData(), *args, lexicographicMode=False,
+        snmp_engine,
+        authdata,
+        target,
+        ContextData(),
+        *args,
+        lexicographicMode=False,
     ):
         if error_indication:
             raise ValueError(error_indication)
