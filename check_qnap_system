@@ -15,9 +15,11 @@ from pysnmp.hlapi import ObjectIdentity, ObjectType
 
 from logicworks_monitoring_lib import (
     add_common_snmp_args,
+    add_table_to_dataset,
     add_vars_to_dataset,
     check_snmp_args,
     get_snmp_data,
+    get_snmp_table_data,
     report,
     unknown_exit,
 )
@@ -39,8 +41,10 @@ def add_performace_data(config, dataset):
             f" 'cpu_temperature'"
             f"={dataset['cpu_temperature']};{config['warning']};{config['critical']};;"
         )
-    if dataset["fan_speed"]:
-        message += f" 'FAN speed'" f"={dataset['fan_speed']};;;;"
+
+    for fan in dataset["fans"]:
+        message += f" 'FAN {fan['systemFanID']} speed'" f"={fan['systemFanSpeed']};;;;"
+
     return message
 
 
@@ -65,6 +69,11 @@ def generate_output(config, dataset):
     if dataset["power_status"] and dataset["power_status"] != "ok":
         state = "CRITICAL"
         message += f" Power status: {dataset['power_status']}"
+
+    for fan in dataset["fans"]:
+        if fan["systemFanStatus"].lower() != "ok":
+            state = "CRITICAL"
+            message += f" FAN {fan['systemFanID']}: {fan['systemFanStatus']}"
 
     if state == "OK":
         message += " All systems nominal"
@@ -102,20 +111,39 @@ def main():
     system_temperature = ObjectType(ObjectIdentity("NAS-MIB", "systemTemperatureEX", 0))
     cpu_temperature = ObjectType(ObjectIdentity("NAS-MIB", "cpu-TemperatureEX", 0))
     power_status = ObjectType(ObjectIdentity("NAS-MIB", "systemPowerStatus", 1))
-    fan_speed = ObjectType(ObjectIdentity("NAS-MIB", "systemFanSpeed", 1))
 
     try:
         raw_data = get_snmp_data(
-            config, system_temperature, cpu_temperature, power_status, fan_speed
+            config,
+            system_temperature,
+            cpu_temperature,
+            power_status,
         )
     except ValueError as err:
         unknown_exit(SERVICE, err)
     add_vars_to_dataset(dataset, raw_data)
 
+    dataset2 = []
+    fan_id = ObjectType(ObjectIdentity("NAS-MIB", "systemFanID"))
+    fan_speed = ObjectType(ObjectIdentity("NAS-MIB", "systemFanSpeed"))
+    fan_status = ObjectType(ObjectIdentity("NAS-MIB", "systemFanStatus"))
+
+    try:
+        raw_data = get_snmp_table_data(
+            config,
+            fan_id,
+            fan_speed,
+            fan_status,
+        )
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+
+    add_table_to_dataset(dataset2, raw_data)
+
     dataset["sys_temperature"] = int(dataset.get("systemTemperatureEX", 0))
     dataset["cpu_temperature"] = int(dataset.get("cpu-TemperatureEX", 0))
     dataset["power_status"] = dataset.get("systemPowerStatus")
-    dataset["fan_speed"] = dataset.get("systemFanSpeed")
+    dataset["fans"] = dataset2
 
     state, message = generate_output(config, dataset)
     report(state, message)
