@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+"""check_qnap_system
+
+Script check various QNAP system states:
+  - System temperature
+  - CPU temperature
+  - Power Supply status
+  - System fan speed
+Information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_vars_to_dataset,
+    check_snmp_args,
+    get_snmp_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "QNAP SYSTEM"
+
+
+def add_performace_data(config, dataset):
+    """Add perfdata to message string"""
+    message = ""
+    message += " |"
+    if dataset["sys_temperature"]:
+        message += (
+            f" 'temperature'"
+            f"={dataset['sys_temperature']};{config['warning']};{config['critical']};;"
+        )
+    if dataset["cpu_temperature"]:
+        message += (
+            f" 'cpu_temperature'"
+            f"={dataset['cpu_temperature']};{config['warning']};{config['critical']};;"
+        )
+    if dataset["fan_speed"]:
+        message += f" 'FAN speed'" f"={dataset['fan_speed']};;;;"
+    return message
+
+
+def generate_output(config, dataset):
+    """Prepare message string and exit code"""
+    state = "OK"
+    message = ""
+
+    if (
+        dataset["sys_temperature"] > config["critical"]
+        or dataset["cpu_temperature"] > config["critical"]
+    ):
+        state = "CRITICAL"
+        message += " Temperature over limit."
+    elif (
+        dataset["sys_temperature"] > config["warning"]
+        or dataset["cpu_temperature"] > config["warning"]
+    ):
+        state = "WARNING"
+        message += " Temperature over limit."
+
+    if dataset["power_status"] and dataset["power_status"] != "ok":
+        state = "CRITICAL"
+        message += f" Power status: {dataset['power_status']}"
+
+    if state == "OK":
+        message += " All systems nominal"
+
+    message = f"{SERVICE} {state} -" + message + add_performace_data(config, dataset)
+    return state, message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+    parser.add_argument(
+        "-w",
+        "--warning",
+        type=int,
+        default=70,
+        help="Warning temperature threshold (Celsius)",
+    )
+    parser.add_argument(
+        "-c",
+        "--critical",
+        type=int,
+        default=90,
+        help="Critical temperature threshold (Celsius)",
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = {}
+
+    system_temperature = ObjectType(ObjectIdentity("NAS-MIB", "systemTemperatureEX", 0))
+    cpu_temperature = ObjectType(ObjectIdentity("NAS-MIB", "cpu-TemperatureEX", 0))
+    power_status = ObjectType(ObjectIdentity("NAS-MIB", "systemPowerStatus", 1))
+    fan_speed = ObjectType(ObjectIdentity("NAS-MIB", "systemFanSpeed", 1))
+
+    try:
+        raw_data = get_snmp_data(
+            config, system_temperature, cpu_temperature, power_status, fan_speed
+        )
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_vars_to_dataset(dataset, raw_data)
+
+    dataset["sys_temperature"] = int(dataset.get("systemTemperatureEX", 0))
+    dataset["cpu_temperature"] = int(dataset.get("cpu-TemperatureEX", 0))
+    dataset["power_status"] = dataset.get("systemPowerStatus")
+    dataset["fan_speed"] = dataset.get("systemFanSpeed")
+
+    state, message = generate_output(config, dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()
