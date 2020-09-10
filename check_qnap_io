@@ -36,7 +36,7 @@ def generate_output(config, dataset):
     state = "OK"
     message = ""
 
-    message = f"{SERVICE} {state} - " + message + add_performace_data(config, dataset)
+    message = f"{SERVICE} {state}" + message + add_performace_data(config, dataset)
     return state, message
 
 
