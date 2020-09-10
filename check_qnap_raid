@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""check_qnap_raid
+
+Script checks QNAP raid arrays for problems.
+Information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_table_to_dataset,
+    check_snmp_args,
+    get_snmp_table_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "QNAP RAID"
+
+
+def generate_output(dataset):
+    """Prepare message string and exit code"""
+    state = "OK"
+    message = ""
+
+    for raid in dataset:
+        if raid["raidStatus"].lower() != "ready":
+            state = "CRITICAL"
+            message += f"Array {raid['raidID']} state critical: {raid['raidStatus']}. "
+        else:
+            message += f"Array {raid['raidID']} state ok: {raid['raidStatus']}. "
+
+    message = f"{SERVICE} {state} - " + message
+    return state, message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+
+    dataset = []
+
+    raid_name = ObjectType(ObjectIdentity("NAS-MIB", "raidID"))
+    raid_status = ObjectType(ObjectIdentity("NAS-MIB", "raidStatus"))
+
+    try:
+        raw_data = get_snmp_table_data(config, raid_name, raid_status)
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+
+    add_table_to_dataset(dataset, raw_data)
+
+    state, message = generate_output(dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()
