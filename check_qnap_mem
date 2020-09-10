@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""check_qnap_mem
+
+Script checks QNAP memory usage.
+Information is retrieved via SNMPv3 using pysnmp library.
+"""
+
+import argparse
+
+from pysnmp.hlapi import ObjectIdentity, ObjectType
+
+from logicworks_monitoring_lib import (
+    add_common_snmp_args,
+    add_vars_to_dataset,
+    check_snmp_args,
+    get_snmp_data,
+    report,
+    unknown_exit,
+)
+
+SERVICE = "QNAP MEM"
+
+
+def check_thresholds(config):
+    """Check input thresholds arguments"""
+    ranger = range(0, 100)
+    if config["warning"] not in ranger or config["critical"] not in ranger:
+        unknown_exit(SERVICE, "Bad args: Bogus warn/crit thresholds")
+
+
+def add_performace_data(config, dataset):
+    """Add perfdata to message string"""
+    message = ""
+    warn_b = int(config["critical"] / 100 * dataset["mem_total"])
+    inverted_warn_b = dataset["mem_total"] - warn_b
+    crit_b = int(config["warning"] / 100 * dataset["mem_total"])
+    inverted_crit_b = dataset["mem_total"] - crit_b
+    message += " |"
+    message += f" 'TOTAL'" f"={dataset['mem_total']}B;;;;"
+    message += (
+        f" 'USED'"
+        f"={dataset['memory_used']}B;{warn_b};{crit_b};0;{dataset['mem_total']}"
+    )
+    message += (
+        f" 'FREE'"
+        f"={dataset['mem_free']}B"
+        f";{inverted_warn_b};{inverted_crit_b};0;{dataset['mem_total']}"
+    )
+    return message
+
+
+def generate_output(config, dataset):
+    """Prepare message string and exit code"""
+    state = "OK"
+
+    if dataset["memory_usage"] >= config["critical"]:
+        state = "CRITICAL"
+    elif dataset["memory_usage"] >= config["warning"]:
+        state = "WARNING"
+
+    message = (
+        f"{SERVICE} {state} - {dataset['memory_usage']} % "
+        f"({dataset['memory_used']} B) used"
+    )
+    message = message + add_performace_data(config, dataset)
+    return state, message
+
+
+def main():
+    """Parse args and execute script logic"""
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    add_common_snmp_args(parser)
+    parser.add_argument(
+        "-w",
+        "--warning",
+        type=int,
+        default=70,
+        help="Warning memory usage percentage (0-100)",
+    )
+    parser.add_argument(
+        "-c",
+        "--critical",
+        type=int,
+        default=90,
+        help="Critical memory usage percentage (0-100)",
+    )
+
+    config = vars(parser.parse_args())
+    check_snmp_args(config)
+    check_thresholds(config)
+
+    dataset = {}
+
+    mem_total = ObjectType(ObjectIdentity("NAS-MIB", "systemTotalMemEX", 0))
+    mem_free = ObjectType(ObjectIdentity("NAS-MIB", "systemFreeMemEX", 0))
+
+    try:
+        raw_data = get_snmp_data(config, mem_total, mem_free)
+    except ValueError as err:
+        unknown_exit(SERVICE, err)
+    add_vars_to_dataset(dataset, raw_data)
+
+    dataset["mem_total"] = int(dataset["systemTotalMemEX"])
+    dataset["mem_free"] = int(dataset["systemFreeMemEX"])
+    dataset["memory_usage"] = 100 - int(
+        dataset["mem_free"] * 1000 / dataset["mem_total"] * 100
+    )
+    dataset["memory_used"] = dataset["mem_total"] - dataset["mem_free"]
+    state, message = generate_output(config, dataset)
+    report(state, message)
+
+
+if __name__ == "__main__":
+    main()
