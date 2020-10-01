@@ -27,7 +27,7 @@ def generate_output(dataset):
     message = ""
 
     for raid in dataset:
-        if raid["raidStatus"].lower() != "ready":
+        if raid["raidStatus"].lower() not in ["ready", "synchronizing"]:
             state = "CRITICAL"
             message += f"Array {raid['raidID']} state critical: {raid['raidStatus']}. "
         else:
