@@ -42,9 +42,10 @@ UPS_STATES = {
 def add_performace_data(config, dataset):
     """Add perfdata to message string"""
     message = "|"
-    message += (
-        f" 'load'" f"={dataset['load']}%;{config['warning']};{config['critical']};;"
-    )
+    if dataset["load"]:
+        message += (
+            f" 'load'" f"={dataset['load']}%;{config['warning']};{config['critical']};;"
+        )
     message += (
         f" 'charge'"
         f"={dataset['charge']}%;{dataset['charge_warn']};{dataset['charge_crit']};;"
@@ -130,7 +131,10 @@ def main():
         unknown_exit(SERVICE, err)
     add_vars_to_dataset(dataset, raw_data)
 
-    dataset["load"] = int(decode_float(dataset["upsInfoLoadValue"]))
+    try:
+        dataset["load"] = int(decode_float(dataset.get("upsInfoLoadValue")))
+    except ValueError as err:
+        dataset["load"] = None
     dataset["charge"] = int(decode_float(dataset["upsBatteryChargeValue"]))
     dataset["charge_crit"] = int(decode_float(dataset["upsBatteryChargeLow"]))
     dataset["charge_warn"] = int(decode_float(dataset["upsBatteryChargeWarning"]))
