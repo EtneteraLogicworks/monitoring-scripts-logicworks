@@ -120,9 +120,9 @@ def unifi_switch_model_autodiscover(config):
     return dataset["agentInventoryMachineModel"]
 
 
-def unifi_usg_model_autodiscover(config):
+def unifi_edgeos_model_autodiscover(config):
     """Get UniFi USG model via SNMP"""
-    unknown_exit(SERVICE, "UniFi USG model autodiscover not supported")
+    unknown_exit(SERVICE, "UBNT EdgeOS router model autodiscover not supported")
 
 
 def fetch_unifi_ap_version(config):
@@ -172,7 +172,9 @@ def main():
         choices=["UniFiSwitch", "UniFiAP", "UniFiUSG"],
     )
     parser.add_argument(
-        "-m", "--model", help="UBNT device model. Required for UniFiUSG",
+        "-m",
+        "--model",
+        help="UBNT device model. Required for EdgeRouter and UniFiUSG",
     )
     config = vars(parser.parse_args())
     check_snmp_args(config)
@@ -181,9 +183,9 @@ def main():
         if not config.get("model"):
             config["model"] = unifi_switch_model_autodiscover(config)
         installed_version = fetch_unifi_switch_version(config)
-    elif config.get("type") == "UniFiUSG":
+    elif config.get("type") in ["EdgeRouter", "UniFiUSG"]:
         if not config.get("model"):
-            config["model"] = unifi_usg_model_autodiscover(config)
+            config["model"] = unifi_edgeos_model_autodiscover(config)
         installed_version = fetch_unifi_usg_version(config)
     elif config.get("type") == "UniFiAP":
         if not config.get("model"):
