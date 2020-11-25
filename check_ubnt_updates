@@ -75,7 +75,8 @@ def fetch_latest_ubnt_version(unifi_model):
         (
             device
             for device in list_of_devices
-            if device["channel"] == "release" and device["platform"] == my_device
+            if device["channel"] == "release"
+            and device["platform"].upper() == my_device
         ),
         None,
     )
