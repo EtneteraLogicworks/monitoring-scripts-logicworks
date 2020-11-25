@@ -141,13 +141,16 @@ def fetch_unifi_switch_version(config):
     return dataset["agentInventorySoftwareVersion"]
 
 
-def fetch_unifi_usg_version(config):
-    """Get installed UniFi USG system version via SNMP"""
+def fetch_unifi_edgeos_version(config):
+    """Get installed EdgeOS system version via SNMP"""
     oid = ObjectType(ObjectIdentity("SNMPv2-MIB", "sysDescr", 0))
     dataset = get_snmp_oids(config, SERVICE, oid)
-
+    if config["type"] == "UniFiUSG":
+        edge_pattern = "EdgeOS v(([0-9]+[.]){3}[0-9]+)"
+    else:
+        edge_pattern = "EdgeOS v(([0-9]+[.]){2}[0-9]+)"
     if dataset["sysDescr"].startswith("EdgeOS"):
-        version_match = re.search("EdgeOS v(([0-9]+[.]){3}[0-9]+)", dataset["sysDescr"])
+        version_match = re.search(edge_pattern, dataset["sysDescr"])
         if version_match:
             installed_version = version_match.group(1)
         else:
@@ -186,7 +189,7 @@ def main():
     elif config.get("type") in ["EdgeRouter", "UniFiUSG"]:
         if not config.get("model"):
             config["model"] = unifi_edgeos_model_autodiscover(config)
-        installed_version = fetch_unifi_usg_version(config)
+        installed_version = fetch_unifi_edgeos_version(config)
     elif config.get("type") == "UniFiAP":
         if not config.get("model"):
             config["model"] = unifi_ap_model_autodiscover(config)
