@@ -169,7 +169,7 @@ def main():
         "--type",
         required=True,
         help="UBNT device type",
-        choices=["UniFiSwitch", "UniFiAP", "UniFiUSG"],
+        choices=["EdgeRouter", "UniFiSwitch", "UniFiAP", "UniFiUSG"],
     )
     parser.add_argument(
         "-m",
