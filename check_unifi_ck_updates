@@ -11,12 +11,16 @@ import re
 
 import paramiko
 import requests
+import warnings
+from cryptography.utils import DeprecatedIn25
 from urllib3.exceptions import InsecureRequestWarning
 
 from logicworks_monitoring_lib import report, unknown_exit
 
 # We don't want any warnings in Icinga plugin output.
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
+# Ignore Paramiko warnings
+warnings.simplefilter('ignore', DeprecatedIn25)
 
 
 SERVICE = "UNIFI UPDATE"
