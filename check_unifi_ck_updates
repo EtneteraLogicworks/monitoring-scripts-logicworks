@@ -9,9 +9,10 @@ Latest available firmware version is retrieved via ubnt.com API (See UNIFI_RELEA
 import argparse
 import re
 
+import paramiko
 import requests
-
 from urllib3.exceptions import InsecureRequestWarning
+
 from logicworks_monitoring_lib import report, unknown_exit
 
 # We don't want any warnings in Icinga plugin output.
@@ -28,30 +29,68 @@ UNIFI_IDENTIFIERS = {
 VERIFY_CK_CERT = False
 
 
-def normalize_version(raw_version):
-    """Strip unwanted characters from the retrieved version"""
-    version_string = re.sub("^v", "", raw_version)
-    version_string = version_string.replace("+", ".")
-    return version_string
+def establish_ssh_connection(config):
+    ssh_client = paramiko.SSHClient()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy)
+    ssh_client.load_system_host_keys()
+    ssh_client.connect(
+        config["host"], username=config["ssh_username"], password=config["ssh_password"]
+    )
+    return ssh_client
 
 
-def parse_cloudkey_info(raw_cloudkey_info):
+def ssh_file_to_string(remote_file):
+    """Read file contents via SFTP"""
+    filestring = ""
+    try:
+        for line in remote_file:
+            filestring += line
+    finally:
+        remote_file.close()
+    return filestring
+
+
+def fetch_cloudkey_ssh_info(config):
+    """Retrieve CloudKey softare version via SSH"""
+    cloudkey_info = {"systems": []}
+    ssh_client = establish_ssh_connection(config)
+    sftp_client = ssh_client.open_sftp()
+    raw_ck_firmware = ssh_file_to_string(sftp_client.open("/usr/lib/version"))
+    raw_controller_firmware = ssh_file_to_string(
+        sftp_client.open("/usr/lib/unifi/webapps/ROOT/app-unifi/.version")
+    )
+    cloudkey_info["model"] = re.search("^([^.]*)", raw_ck_firmware).group(1)
+    cloudkey_info["version_installed"] = re.search(
+        "v([0-9]+[.][0-9]+[.][0-9]+)", raw_ck_firmware
+    ).group(1)
+    cloudkey_info["systems"].append({})
+    cloudkey_info["systems"][-1]["id"] = "unifi"
+    cloudkey_info["systems"][-1]["version_installed"] = re.search(
+        "^([0-9]+[.][0-9]+[.][0-9]+)", raw_controller_firmware
+    ).group(1)
+
+    return cloudkey_info
+
+
+def parse_cloudkey_web_info(raw_cloudkey_info):
     """Parse data from Cloud Key"""
     cloudkey_info = {"systems": []}
     for system in raw_cloudkey_info["data"][0]["systems"]:
         if system["installed"] and system["id"] in ["unifi"]:
             cloudkey_info["systems"].append({})
             cloudkey_info["systems"][-1]["id"] = system["id"]
-            cloudkey_info["systems"][-1]["version_installed"] = system["version"]
+            cloudkey_info["systems"][-1]["version_installed"] = re.search(
+                "^([0-9]+[.][0-9]+[.][0-9]+)", system["version"]
+            ).group(1)
     raw_version = raw_cloudkey_info["data"][0]["version"]
     cloudkey_info["model"] = re.search("^(.+?)[.]", raw_version).group(1)
     cloudkey_info["version_installed"] = re.search(
-        "v([0-9.]+[^.]+)", raw_version
+        "v([0-9]+[.][0-9]+[.][0-9]+)", raw_version
     ).group(1)
     return cloudkey_info
 
 
-def fetch_cloudkey_info(config):
+def fetch_cloudkey_web_info(config):
     """Download version info from Cloud Key info.php"""
     cloudkey_info_url = f"http://{config['host']}/info.php"
     try:
@@ -59,7 +98,7 @@ def fetch_cloudkey_info(config):
         raw_cloudkey_info = web_req.json()
     except (requests.exceptions.RequestException, ValueError) as err:
         unknown_exit(SERVICE, err)
-    cloudkey_info = parse_cloudkey_info(raw_cloudkey_info)
+    cloudkey_info = parse_cloudkey_web_info(raw_cloudkey_info)
     return cloudkey_info
 
 
@@ -96,15 +135,17 @@ def get_all_latest_versions(cloudkey_info):
     """Obtain all latest software version and prepare data structure"""
     list_of_devices = fetch_latest_versions()
     cloud_key = get_device_item(list_of_devices, cloudkey_info["model"])
-    cloudkey_info["latest_version"] = normalize_version(cloud_key["version"])
+    cloudkey_info["latest_version"] = re.search(
+        "^v([0-9]+[.][0-9]+[.][0-9]+)", cloud_key["version"]
+    ).group(1)
     for system in cloudkey_info["systems"]:
         if system["id"] == "unifi":
             system_info = get_device_item(
                 list_of_devices, platform="debian", product="unifi-controller"
             )
-            system["latest_version"] = (
-                re.search("atag-(.*)", system_info["version"]).group(1) + "-1"
-            )
+            system["latest_version"] = re.search(
+                "^v([0-9]+[.][0-9]+[.][0-9]+)", system_info["version"]
+            ).group(1)
 
 
 def compare_versions(product, installed, latest, output_data):
@@ -161,8 +202,21 @@ def main():
     parser.add_argument(
         "-H", "--host", required=True, help="Name or IPv4 address of host to check"
     )
+    parser.add_argument(
+        "-s",
+        "--ssh",
+        action="store_true",
+        default=False,
+        help="Enable SSH mode for GenV2 firmware",
+    )
+    parser.add_argument("-u", "--ssh-username", help="Username for SSH connection")
+    parser.add_argument("-p", "--ssh-password", help="Password for SSH connection")
     config = vars(parser.parse_args())
-    cloudkey_info = fetch_cloudkey_info(config)
+    if config["ssh"]:
+        cloudkey_info = fetch_cloudkey_ssh_info(config)
+    else:
+        cloudkey_info = fetch_cloudkey_web_info(config)
+
     get_all_latest_versions(cloudkey_info)
     state, message = generate_output(cloudkey_info)
     report(state, message)
