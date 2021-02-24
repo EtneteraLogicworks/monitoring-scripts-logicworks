@@ -45,6 +45,7 @@ JS_FIXES = [
         'SoftwareBaseURL + "',
         '"https://h10145.www1.hpe.com/downloads/DownloadSoftware.aspx?SoftwareReleaseUId=',
     ),
+    ("}{", "}, {"),
 ]
 
 
@@ -201,7 +202,10 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "-m", "--model", default="HP", help="Switch model.",
+        "-m",
+        "--model",
+        default="HP",
+        help="Switch model.",
     )
     add_common_snmp_args(parser)
 
