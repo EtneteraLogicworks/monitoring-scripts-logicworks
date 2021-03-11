@@ -26,7 +26,7 @@ from logicworks_monitoring_lib import (
 requests.packages.urllib3.disable_warnings(category=InsecureRequestWarning)
 
 SERVICE = "HP UPDATE"
-SUPPORTED_SWITCH_FAMILY = ["1810", "1820", "1910-24G", "1920-16G", "1920-24G", "1920S"]
+SUPPORTED_SWITCH_FAMILY = ["1810", "1820", "1910-24G", "1920-8G", "1920-16G", "1920-24G", "1920S"]
 
 
 DOWNLOAD_WEBPAGE = "https://h10145.www1.hpe.com/downloads/SoftwareReleases.aspx"
