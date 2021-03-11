@@ -163,9 +163,11 @@ def get_system_information(config, dataset):
         unknown_exit(SERVICE, f"Unsupported Hardware: {dataset['sysDescr']}")
 
     # Find information based on type
-    if dataset["type"] in ["1910-24G", "1920-16G", "1920-24G"]:
+    if dataset["type"] in ["1910-24G", "1920-8G", "1920-16G", "1920-24G"]:
         if dataset["type"] == "1910-24G":
             dataset["model_number"] = "JE006A"
+        if dataset["type"] == "1920-8G":
+            dataset["model_number"] = "JG920A"
         if dataset["type"] == "1920-16G":
             dataset["model_number"] = "JG923A"
         if dataset["type"] == "1920-24G":
