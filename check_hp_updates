@@ -235,7 +235,7 @@ def main():
         find_version_from_jsdatafile(dataset)
         # Fallback query
         # find_version_from_web(dataset)
-    elif dataset["type"] in ["1810", "1910-24G", "1920-16G", "1920-24G"]:
+    elif dataset["type"] in ["1810", "1910-24G", "1920-8G", "1920-16G", "1920-24G"]:
         find_version_from_web(dataset)
 
     if "latest_version" not in dataset:
