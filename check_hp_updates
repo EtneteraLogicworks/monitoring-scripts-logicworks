@@ -42,6 +42,10 @@ JS_FIXES = [
         '"http://h20564.www2.hpe.com/hpsc/doc/public/display?docId=',
     ),
     (
+        'DocLinkBaseURL_3 + "',
+        '"https://www.arubanetworks.com/techdocs/P-code/RN/',
+    ),
+    (
         'SoftwareBaseURL + "',
         '"https://h10145.www1.hpe.com/downloads/DownloadSoftware.aspx?SoftwareReleaseUId=',
     ),
