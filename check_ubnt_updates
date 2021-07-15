@@ -24,6 +24,7 @@ SERVICE = "UBNT UPDATE"
 
 UNIFI_RELEASES_URL = "https://fw-update.ubnt.com/api/firmware-latest"
 UNIFI_IDENTIFIERS = {
+    "U6-LR": "UALR6v2",
     "UAP-AC-EDU": "U7PG2",
     "UAP–AC–IW": "U7PG2",
     "UAP–AC–IW–PRO": "U7PG2",
