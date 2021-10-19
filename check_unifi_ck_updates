@@ -118,16 +118,15 @@ def fetch_latest_versions():
 
 def get_device_item(list_of_devices, platform, product="unifi-firmware"):
     """Get specific device from list of Unifi devices"""
-    device_item = next(
-        (
-            device
-            for device in list_of_devices
-            if device["channel"] == "release"
+    device_item = None
+    for device in list_of_devices:
+        if (
+            device["channel"] == "release"
             and device["platform"] == platform
             and device["product"] == product
-        ),
-        None,
-    )
+        ):
+            device_item = device
+
     if device_item is None:
         unknown_exit(
             SERVICE, f"Unable to find updates for platform {platform} product {product}"
@@ -138,7 +137,11 @@ def get_device_item(list_of_devices, platform, product="unifi-firmware"):
 def get_all_latest_versions(cloudkey_info):
     """Obtain all latest software version and prepare data structure"""
     list_of_devices = fetch_latest_versions()
-    cloud_key = get_device_item(list_of_devices, cloudkey_info["model"])
+    if cloudkey_info["model"] == "UCK":
+        product = "unifi-firmware"
+    else:
+        product = "unifi-cloudkey"
+    cloud_key = get_device_item(list_of_devices, cloudkey_info["model"], product)
     cloudkey_info["latest_version"] = re.search(
         "^v([0-9]+[.][0-9]+[.][0-9]+)", cloud_key["version"]
     ).group(1)
